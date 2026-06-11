@@ -21,8 +21,10 @@ const wl = wayland.client.wl;
 const Registry = wl.Registry;
 const Event = Registry.Event;
 const Display = wl.Display;
-const ExtDataControlManagerV1 = wayland.client.ext.DataControlManagerV1;
-const ZwlrDataControlManagerV1 = wayland.client.zwlr.DataControlManagerV1;
+const Seat = wl.Seat;
+
+const ext = @import("protocols/ext.zig");
+const zwlr = @import("protocols/zwlr.zig");
 
 const WaylandBackend = @This();
 
@@ -31,44 +33,42 @@ registry: *Registry,
 dcm: DataControlManager,
 
 const Globals = struct {
-    ext_dcm: ?*ExtDataControlManagerV1 = null,
-    zlwr_dcm: ?*ZwlrDataControlManagerV1 = null,
+    ext_dcm: ?*ext.Manager = null,
+    zwlr_dcm: ?*zwlr.Manager = null,
 };
 
 var globals: Globals = .{};
 
-// We want to only use one of these in practice. Prefer the Ext standard version
-// since the Wlr one is deprecated.
 const DataControlManager = union(enum) {
-    ext: *ExtDataControlManagerV1,
-    zwlr: *ZwlrDataControlManagerV1,
+    ext: *ext.Manager,
+    zwlr: *zwlr.Manager,
 };
 
 const DataControlSource = union(enum) {
-    ext: *wayland.client.ext.DataControlSourceV1,
-    zwlr: *wayland.client.zwlr.DataControlSourceV1,
+    ext: *ext.Source,
+    zwlr: *zwlr.Source,
+};
+
+const DataControlDevice = union(enum) {
+    ext: *ext.Device,
+    zwlr: *zwlr.Device,
 };
 
 fn regListener(reg: *Registry, ev: Event, userdata: *Globals) void {
     switch (ev) {
         .global => |global| {
-            if (std.mem.orderZ(u8, global.interface, ExtDataControlManagerV1.interface.name) == .eq) {
-                userdata.ext_dcm = reg.bind(global.name, ExtDataControlManagerV1, 1) catch return;
+            if (std.mem.orderZ(u8, global.interface, ext.Manager.interface.name) == .eq) {
+                userdata.ext_dcm = reg.bind(global.name, ext.Manager, 1) catch return;
                 std.log.debug("Bound ExtDataControlManager V1 to globals.", .{});
-            } else if (std.mem.orderZ(u8, global.interface, ZwlrDataControlManagerV1.interface.name) == .eq) {
-                userdata.zlwr_dcm = reg.bind(global.name, ZwlrDataControlManagerV1, 1) catch return;
+            } else if (std.mem.orderZ(u8, global.interface, zwlr.Manager.interface.name) == .eq) {
+                userdata.zwlr_dcm = reg.bind(global.name, zwlr.Manager, 1) catch return;
                 std.log.debug("Bound ZwlrDataControlManager V1 to globals.", .{});
             }
         },
-        // TODO: Maybe handle this but I think it's not majorly important.
-        .global_remove => {
-            // std.log.debug("Got .global_remove event this is unhandled! {}", .{ev});
-        },
+        .global_remove => {},
     }
 }
 
-/// Should be called before attempting to call any of the other
-/// functions in this file.
 pub fn init() !WaylandBackend {
     const display = try Display.connect(null);
     const registry = try display.getRegistry();
@@ -77,25 +77,15 @@ pub fn init() !WaylandBackend {
     const res = display.roundtrip();
 
     if (res != .SUCCESS) {
-        // std.log.err("Display roundtrip failed: {}", res);
         return error.RoundTripFailed;
     }
 
-    // We want to default to the Ext version.
     var dcm: ?DataControlManager = null;
 
-    if (globals.ext_dcm) |ext| {
-        dcm = .{ .ext = ext };
-    }
-
-    blk: {
-        if (globals.zlwr_dcm) |zwlr| {
-            if (dcm) |_| {
-                break :blk;
-            }
-
-            dcm = .{ .zwlr = zwlr };
-        }
+    if (globals.ext_dcm) |ext_mgr| {
+        dcm = .{ .ext = ext_mgr };
+    } else if (globals.zwlr_dcm) |zwlr_mgr| {
+        dcm = .{ .zwlr = zwlr_mgr };
     }
 
     return .{
@@ -106,12 +96,12 @@ pub fn init() !WaylandBackend {
 }
 
 pub fn deinit(self: WaylandBackend) void {
-    if (globals.ext_dcm) |ext| {
-        ext.destroy();
+    if (globals.ext_dcm) |ext_mgr| {
+        ext_mgr.destroy();
     }
 
-    if (globals.zlwr_dcm) |zwlr| {
-        zwlr.destroy();
+    if (globals.zwlr_dcm) |zwlr_mgr| {
+        zwlr_mgr.destroy();
     }
 
     self.registry.destroy();
@@ -125,9 +115,11 @@ fn createDataSource(self: *WaylandBackend) !DataControlSource {
     };
 }
 
-pub fn getClipboard(self: *WaylandBackend) !void {
-    _ = self; // autofix
-
+fn getDataDevice(self: *WaylandBackend, seat: *Seat) !DataControlDevice {
+    return switch (self.dcm) {
+        .ext => .{ .ext = try self.dcm.ext.getDataDevice(seat) },
+        .zwlr => .{ .zwlr = try self.dcm.zwlr.getDataDevice(seat) },
+    };
 }
 
 test "init and clean up" {

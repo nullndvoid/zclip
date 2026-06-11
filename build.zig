@@ -26,6 +26,7 @@ pub fn build(b: *std.Build) void {
 
         scanner.generate("ext_data_control_manager_v1", 1);
         scanner.generate("zwlr_data_control_manager_v1", 1);
+        scanner.generate("wl_seat", 10);
     }
 
     const options = b.addOptions();
