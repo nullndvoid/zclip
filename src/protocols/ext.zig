@@ -13,6 +13,7 @@
 
 const std = @import("std");
 const Io = std.Io;
+const Allocator = std.mem.Allocator;
 
 const c = @import("c");
 const wayland = @import("wayland");
@@ -44,10 +45,10 @@ pub fn dataControlDeviceListener(dev: *Device, ev: Device.Event, parent: *Parent
         },
         .selection => |sel_ev| {
             state.current_offer = sel_ev.id;
-            readOffer(parent.io, sel_ev.id orelse return);
+            readOffer(parent.io, parent.alloc, sel_ev.id orelse return);
         },
         .primary_selection => |prim_ev| {
-            readOffer(parent.io, prim_ev.id orelse return);
+            readOffer(parent.io, parent.alloc, prim_ev.id orelse return);
         },
         .finished => {
             if (state.current_offer) |offer| {
@@ -57,16 +58,17 @@ pub fn dataControlDeviceListener(dev: *Device, ev: Device.Event, parent: *Parent
     }
 }
 
-fn readOffer(io: Io, offer: *Offer) void {
+/// # Request that the data is transferred
+/// To transfer the offered data, the client issues this request and indicates the MIME type it wants to receive. The transfer happens through the passed file descriptor (typically created with the pipe system call). The source client writes the data in the MIME type representation requested and then closes the file descriptor.
+/// The receiving client reads from the read end of the pipe until EOF and then closes its end, at which point the transfer is complete.
+fn readOffer(io: Io, alloc: Allocator, offer: *Offer) void {
     var pipe: [2]i32 = undefined;
     if (std.c.pipe(&pipe) != 0) {
         std.log.err("Could not create pipe!", .{});
         c.perror(null);
     }
 
-    // Otherwise:
     offer.receive("text/plain", pipe[1]);
-    _ = std.c.close(pipe[1]);
 
     const read_file = std.Io.File{ .handle = pipe[0], .flags = .{ .nonblocking = false } };
     defer read_file.close(io);
@@ -76,15 +78,8 @@ fn readOffer(io: Io, offer: *Offer) void {
     var file_rdr = read_file.reader(io, &rdr_buf);
     const rdr = &file_rdr.interface;
 
-    // TODO: Read with allocation perhaps? Currently we truncate.
-    var buf: [4096]u8 = @splat(0);
-    var read: usize = 0;
+    const bytes = rdr.allocRemaining(alloc, .unlimited) catch return;
+    defer alloc.free(bytes);
 
-    while (read < buf.len) {
-        const got = rdr.readSliceShort(buf[read..]) catch return;
-        if (got == 0) break;
-        read += got;
-    }
-
-    std.log.debug("Clipboard: {s}\n", .{buf[0..read]});
+    std.log.debug("Clipboard: {s}\n", .{bytes});
 }

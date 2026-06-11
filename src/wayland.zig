@@ -15,6 +15,7 @@
 
 const std = @import("std");
 const Io = std.Io;
+const Allocator = std.mem.Allocator;
 
 const wayland = @import("wayland");
 const wl = wayland.client.wl;
@@ -33,6 +34,7 @@ registry: *Registry,
 dcm: DataControlManager,
 seat: *Seat,
 io: Io,
+alloc: Allocator,
 dev: DataControlDevice,
 
 const Globals = struct {
@@ -76,15 +78,18 @@ fn regListener(reg: *Registry, ev: Event, userdata: *Globals) void {
     }
 }
 
-pub fn init(io: Io) !WaylandBackend {
-    var backend = try _init(io);
+pub fn init(io: Io, alloc: Allocator) !*WaylandBackend {
+    const backend = try alloc.create(WaylandBackend);
+    errdefer alloc.destroy(backend);
+
+    backend.* = try _init(io, alloc);
     backend.setDataDeviceListener();
 
     return backend;
 }
 
 /// This handles initialising most of the state we need but call `init` to handle setting up some event listeners for you.
-fn _init(io: Io) !WaylandBackend {
+fn _init(io: Io, alloc: Allocator) !WaylandBackend {
     const display = try Display.connect(null);
     const registry = try display.getRegistry();
 
@@ -113,10 +118,11 @@ fn _init(io: Io) !WaylandBackend {
         .seat = seat,
         .io = io,
         .dev = data_dev,
+        .alloc = alloc,
     };
 }
 
-pub fn deinit(self: WaylandBackend) void {
+pub fn deinit(self: *WaylandBackend) void {
     if (globals.ext_dcm) |ext_mgr| {
         ext_mgr.destroy();
     }
@@ -127,6 +133,7 @@ pub fn deinit(self: WaylandBackend) void {
 
     self.registry.destroy();
     self.display.disconnect();
+    self.alloc.destroy(self);
 }
 
 fn createDataSource(self: *WaylandBackend) !DataControlSource {
@@ -152,10 +159,15 @@ fn setDataDeviceListener(self: *WaylandBackend) void {
 
 test "init and clean up" {
     const io = std.testing.io;
-    const wayland_backend = try init(io);
+    const alloc = std.testing.allocator;
+
+    var wayland_backend = try init(io, alloc);
     defer wayland_backend.deinit();
 
-    // TODO: End-to-end test by pushing and pulling from clipboard,
-    //       for now I am happy if we see some text.
-    try io.sleep(.fromSeconds(5), .real);
+    while (wayland_backend.display.dispatch() == .SUCCESS) {
+        // TODO: End-to-end test by pushing and pulling from clipboard,
+        //       for now I am happy if we see some text.
+        try io.sleep(.fromSeconds(5), .real);
+        break;
+    }
 }
