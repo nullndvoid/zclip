@@ -18,6 +18,12 @@ pub fn build(b: *std.Build) void {
 
     var wayland: *std.Build.Module = undefined;
 
+    const perror = b.addTranslateC(.{
+        .root_source_file = b.path("src/perror.h"),
+        .optimize = optimize,
+        .target = target,
+    });
+
     if (platform == .wayland) {
         const scanner = Scanner.create(b, .{});
         wayland = b.createModule(.{ .root_source_file = scanner.result });
@@ -26,7 +32,7 @@ pub fn build(b: *std.Build) void {
 
         scanner.generate("ext_data_control_manager_v1", 1);
         scanner.generate("zwlr_data_control_manager_v1", 1);
-        scanner.generate("wl_seat", 10);
+        scanner.generate("wl_seat", 1);
     }
 
     const options = b.addOptions();
@@ -43,6 +49,8 @@ pub fn build(b: *std.Build) void {
         mod.addImport("wayland", wayland);
         mod.linkSystemLibrary("wayland-client", .{});
     }
+
+    mod.addImport("c", perror.addModule("c"));
 
     const exe = b.addExecutable(.{
         .name = "zclip",

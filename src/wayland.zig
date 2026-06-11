@@ -31,10 +31,13 @@ const WaylandBackend = @This();
 display: *Display,
 registry: *Registry,
 dcm: DataControlManager,
+seat: *Seat,
+io: Io,
 
 const Globals = struct {
     ext_dcm: ?*ext.Manager = null,
     zwlr_dcm: ?*zwlr.Manager = null,
+    seat: ?*Seat = null,
 };
 
 var globals: Globals = .{};
@@ -63,13 +66,15 @@ fn regListener(reg: *Registry, ev: Event, userdata: *Globals) void {
             } else if (std.mem.orderZ(u8, global.interface, zwlr.Manager.interface.name) == .eq) {
                 userdata.zwlr_dcm = reg.bind(global.name, zwlr.Manager, 1) catch return;
                 std.log.debug("Bound ZwlrDataControlManager V1 to globals.", .{});
+            } else if (std.mem.orderZ(u8, global.interface.name, Seat.interface.name) == .eq) {
+                userdata.seat = reg.bind(global.name, Seat, 1) catch return;
             }
         },
         .global_remove => {},
     }
 }
 
-pub fn init() !WaylandBackend {
+pub fn init(io: Io) !WaylandBackend {
     const display = try Display.connect(null);
     const registry = try display.getRegistry();
 
@@ -92,6 +97,8 @@ pub fn init() !WaylandBackend {
         .display = display,
         .registry = registry,
         .dcm = dcm.?,
+        .seat = globals.seat.?,
+        .io = io,
     };
 }
 
@@ -115,10 +122,10 @@ fn createDataSource(self: *WaylandBackend) !DataControlSource {
     };
 }
 
-fn getDataDevice(self: *WaylandBackend, seat: *Seat) !DataControlDevice {
+fn getDataDevice(self: *WaylandBackend) !DataControlDevice {
     return switch (self.dcm) {
-        .ext => .{ .ext = try self.dcm.ext.getDataDevice(seat) },
-        .zwlr => .{ .zwlr = try self.dcm.zwlr.getDataDevice(seat) },
+        .ext => .{ .ext = try self.dcm.ext.getDataDevice(self.seat) },
+        .zwlr => .{ .zwlr = try self.dcm.zwlr.getDataDevice(self.seat) },
     };
 }
 
