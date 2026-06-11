@@ -9,7 +9,7 @@ A tool to manage and sync your clipboard between devices.
   - Maybe use ed25519 or something like that.
 - CLI interface for listing clipboard items
 - Support images and files?
-- Nice GUI
+- Nice GUI <-- Possibly as a separate app anyway? Qt perhaps or something Zig-native.
 - System tray icon
 
 Maybe something like this already exists but this would be a nice tool to have :)

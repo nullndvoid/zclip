@@ -1,13 +1,43 @@
 const std = @import("std");
 
+const Scanner = @import("wayland").Scanner;
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+
+    const platform = b.option(
+        enum { wayland, windows },
+        "platform",
+        "Target platform",
+    ) orelse switch (@import("builtin").os.tag) {
+        .linux => .wayland,
+        .windows => .windows,
+        else => @panic("unsupported platform"),
+    };
+
+    var wayland: *std.Build.Module = undefined;
+
+    if (platform == .wayland) {
+        const scanner = Scanner.create(b, .{});
+        wayland = b.createModule(.{ .root_source_file = scanner.result });
+        scanner.addSystemProtocol("staging/ext-data-control/ext-data-control-v1.xml");
+    }
+
+    const options = b.addOptions();
+    options.addOption(@TypeOf(platform), "platform", platform);
 
     const mod = b.addModule("zclip", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
     });
+
+    mod.addOptions("options", options);
+
+    if (platform == .wayland) {
+        mod.addImport("wayland", wayland);
+        mod.linkSystemLibrary("wayland-client", .{});
+    }
 
     const exe = b.addExecutable(.{
         .name = "zclip",
