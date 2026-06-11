@@ -66,7 +66,7 @@ fn regListener(reg: *Registry, ev: Event, userdata: *Globals) void {
             } else if (std.mem.orderZ(u8, global.interface, zwlr.Manager.interface.name) == .eq) {
                 userdata.zwlr_dcm = reg.bind(global.name, zwlr.Manager, 1) catch return;
                 std.log.debug("Bound ZwlrDataControlManager V1 to globals.", .{});
-            } else if (std.mem.orderZ(u8, global.interface.name, Seat.interface.name) == .eq) {
+            } else if (std.mem.orderZ(u8, global.interface, Seat.interface.name) == .eq) {
                 userdata.seat = reg.bind(global.name, Seat, 1) catch return;
             }
         },
@@ -130,6 +130,7 @@ fn getDataDevice(self: *WaylandBackend) !DataControlDevice {
 }
 
 test "init and clean up" {
-    const wayland_backend = try init();
+    const io = std.testing.io;
+    const wayland_backend = try init(io);
     defer wayland_backend.deinit();
 }

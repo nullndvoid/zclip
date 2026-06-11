@@ -31,11 +31,16 @@ const State = struct {
 
 var state: State = .{};
 
+pub fn dataControlOfferListener(_: *Offer, ev: Offer.Event, _: *Parent) void {
+    std.log.debug("Got MIME type: {s}", .{ev.offer.mime_type});
+}
+
 pub fn dataControlDeviceListener(dev: *Device, ev: Device.Event, parent: *Parent) void {
     _ = dev;
     switch (ev) {
         .data_offer => |offer_ev| {
             state.pending_offer = offer_ev.id;
+            offer_ev.id.setListener(*Parent, dataControlOfferListener, parent);
         },
         .selection => |sel_ev| {
             state.current_offer = sel_ev.id;
