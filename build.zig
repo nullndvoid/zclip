@@ -22,6 +22,10 @@ pub fn build(b: *std.Build) void {
         const scanner = Scanner.create(b, .{});
         wayland = b.createModule(.{ .root_source_file = scanner.result });
         scanner.addSystemProtocol("staging/ext-data-control/ext-data-control-v1.xml");
+        scanner.addCustomProtocol(b.path("protocols/wlr-data-control-unstable-v1.xml"));
+
+        scanner.generate("ext_data_control_manager_v1", 1);
+        scanner.generate("zwlr_data_control_manager_v1", 1);
     }
 
     const options = b.addOptions();
