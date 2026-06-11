@@ -23,3 +23,7 @@ pub const Backend = switch (opts.platform) {
     .wayland => @import("wayland.zig"),
     .windows => @import("windows.zig"),
 };
+
+test {
+    std.testing.refAllDecls(@This());
+}
