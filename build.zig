@@ -55,6 +55,9 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "zclip", .module = mod },
             },
         }),
+        // Temp fix for new linker bugs.
+        .use_lld = true,
+        .use_llvm = true,
     });
 
     b.installArtifact(exe);
@@ -71,12 +74,24 @@ pub fn build(b: *std.Build) void {
 
     const mod_tests = b.addTest(.{
         .root_module = mod,
+        .use_lld = true,
+        .use_llvm = true,
+        .test_runner = .{
+            .mode = .simple,
+            .path = b.path("test_runner.zig"),
+        },
     });
 
     const run_mod_tests = b.addRunArtifact(mod_tests);
 
     const exe_tests = b.addTest(.{
         .root_module = exe.root_module,
+        .use_lld = true,
+        .use_llvm = true,
+        .test_runner = .{
+            .mode = .simple,
+            .path = b.path("test_runner.zig"),
+        },
     });
 
     const run_exe_tests = b.addRunArtifact(exe_tests);
