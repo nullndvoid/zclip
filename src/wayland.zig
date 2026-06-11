@@ -33,6 +33,7 @@ registry: *Registry,
 dcm: DataControlManager,
 seat: *Seat,
 io: Io,
+dev: DataControlDevice,
 
 const Globals = struct {
     ext_dcm: ?*ext.Manager = null,
@@ -68,6 +69,7 @@ fn regListener(reg: *Registry, ev: Event, userdata: *Globals) void {
                 std.log.debug("Bound ZwlrDataControlManager V1 to globals.", .{});
             } else if (std.mem.orderZ(u8, global.interface, Seat.interface.name) == .eq) {
                 userdata.seat = reg.bind(global.name, Seat, 1) catch return;
+                std.log.debug("Got wl_seat from compositor.", .{});
             }
         },
         .global_remove => {},
@@ -75,6 +77,14 @@ fn regListener(reg: *Registry, ev: Event, userdata: *Globals) void {
 }
 
 pub fn init(io: Io) !WaylandBackend {
+    var backend = try _init(io);
+    backend.setDataDeviceListener();
+
+    return backend;
+}
+
+/// This handles initialising most of the state we need but call `init` to handle setting up some event listeners for you.
+fn _init(io: Io) !WaylandBackend {
     const display = try Display.connect(null);
     const registry = try display.getRegistry();
 
@@ -93,12 +103,16 @@ pub fn init(io: Io) !WaylandBackend {
         dcm = .{ .zwlr = zwlr_mgr };
     }
 
+    const seat = globals.seat.?;
+    const data_dev = try getDataDevice(dcm.?, seat);
+
     return .{
         .display = display,
         .registry = registry,
         .dcm = dcm.?,
-        .seat = globals.seat.?,
+        .seat = seat,
         .io = io,
+        .dev = data_dev,
     };
 }
 
@@ -122,15 +136,26 @@ fn createDataSource(self: *WaylandBackend) !DataControlSource {
     };
 }
 
-fn getDataDevice(self: *WaylandBackend) !DataControlDevice {
-    return switch (self.dcm) {
-        .ext => .{ .ext = try self.dcm.ext.getDataDevice(self.seat) },
-        .zwlr => .{ .zwlr = try self.dcm.zwlr.getDataDevice(self.seat) },
+fn getDataDevice(dcm: DataControlManager, seat: *Seat) !DataControlDevice {
+    return switch (dcm) {
+        .ext => .{ .ext = try dcm.ext.getDataDevice(seat) },
+        .zwlr => .{ .zwlr = try dcm.zwlr.getDataDevice(seat) },
     };
+}
+
+fn setDataDeviceListener(self: *WaylandBackend) void {
+    switch (self.dev) {
+        .ext => self.dev.ext.setListener(*WaylandBackend, ext.dataControlDeviceListener, self),
+        .zwlr => self.dev.zwlr.setListener(*WaylandBackend, zwlr.dataControlDeviceListener, self),
+    }
 }
 
 test "init and clean up" {
     const io = std.testing.io;
     const wayland_backend = try init(io);
     defer wayland_backend.deinit();
+
+    // TODO: End-to-end test by pushing and pulling from clipboard,
+    //       for now I am happy if we see some text.
+    try io.sleep(.fromSeconds(5), .real);
 }

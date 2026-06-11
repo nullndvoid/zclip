@@ -44,10 +44,10 @@ pub fn dataControlDeviceListener(dev: *Device, ev: Device.Event, parent: *Parent
         },
         .selection => |sel_ev| {
             state.current_offer = sel_ev.id;
-            readOffer(parent.io, sel_ev.id);
+            readOffer(parent.io, sel_ev.id orelse return);
         },
         .primary_selection => |prim_ev| {
-            readOffer(parent.io, prim_ev.id);
+            readOffer(parent.io, prim_ev.id orelse return);
         },
         .finished => {
             if (state.current_offer) |offer| {
@@ -60,12 +60,13 @@ pub fn dataControlDeviceListener(dev: *Device, ev: Device.Event, parent: *Parent
 fn readOffer(io: Io, offer: *Offer) void {
     var pipe: [2]i32 = undefined;
     if (std.c.pipe(&pipe) != 0) {
-        std.log.err("Could not create pipe! {s}", c.perror(null));
+        std.log.err("Could not create pipe!", .{});
+        c.perror(null);
     }
 
     // Otherwise:
-    offer.receive("text/plain", pipe[1]) catch return;
-    std.c.close(pipe[1]);
+    offer.receive("text/plain", pipe[1]);
+    _ = std.c.close(pipe[1]);
 
     const read_file = std.Io.File{ .handle = pipe[0], .flags = .{ .nonblocking = false } };
     defer read_file.close(io);
@@ -80,7 +81,7 @@ fn readOffer(io: Io, offer: *Offer) void {
     var read: usize = 0;
 
     while (read < buf.len) {
-        const got = rdr.readSliceShort(&buf[read..]) catch return;
+        const got = rdr.readSliceShort(buf[read..]) catch return;
         if (got == 0) break;
         read += got;
     }
