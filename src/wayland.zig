@@ -167,7 +167,5 @@ test "init and clean up" {
     while (wayland_backend.display.dispatch() == .SUCCESS) {
         // TODO: End-to-end test by pushing and pulling from clipboard,
         //       for now I am happy if we see some text.
-        try io.sleep(.fromSeconds(5), .real);
-        break;
     }
 }

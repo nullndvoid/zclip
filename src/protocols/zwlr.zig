@@ -13,7 +13,6 @@
 
 const std = @import("std");
 const Io = std.Io;
-const Allocator = std.mem.Allocator;
 
 const c = @import("c");
 const wayland = @import("wayland");
@@ -45,7 +44,7 @@ pub fn dataControlDeviceListener(dev: *Device, ev: Device.Event, parent: *Parent
         },
         .selection => |sel_ev| {
             state.current_offer = sel_ev.id;
-            readOffer(parent.io, parent.alloc, sel_ev.id orelse return);
+            readOffer(parent, sel_ev.id orelse return);
         },
         .finished => {
             if (state.current_offer) |offer| {
@@ -58,14 +57,24 @@ pub fn dataControlDeviceListener(dev: *Device, ev: Device.Event, parent: *Parent
 /// # Request that the data is transferred
 /// To transfer the offered data, the client issues this request and indicates the MIME type it wants to receive. The transfer happens through the passed file descriptor (typically created with the pipe system call). The source client writes the data in the MIME type representation requested and then closes the file descriptor.
 /// The receiving client reads from the read end of the pipe until EOF and then closes its end, at which point the transfer is complete.
-fn readOffer(io: Io, alloc: Allocator, offer: *Offer) void {
+fn readOffer(parent: *Parent, offer: *Offer) void {
+    const io = parent.io;
+
     var pipe: [2]i32 = undefined;
     if (std.c.pipe(&pipe) != 0) {
         std.log.err("Could not create pipe!", .{});
         c.perror(null);
+        return;
     }
 
     offer.receive("text/plain", pipe[1]);
+    _ = std.c.close(pipe[1]);
+
+    if (parent.display.flush() != .SUCCESS) {
+        std.log.err("Failed to flush display for clipboard receive.", .{});
+        _ = std.c.close(pipe[0]);
+        return;
+    }
 
     const read_file = std.Io.File{ .handle = pipe[0], .flags = .{ .nonblocking = false } };
     defer read_file.close(io);
@@ -75,8 +84,8 @@ fn readOffer(io: Io, alloc: Allocator, offer: *Offer) void {
     var file_rdr = read_file.reader(io, &rdr_buf);
     const rdr = &file_rdr.interface;
 
-    const bytes = rdr.allocRemaining(alloc, .unlimited) catch return;
-    defer alloc.free(bytes);
+    const bytes = rdr.allocRemaining(parent.alloc, .unlimited) catch return;
+    defer parent.alloc.free(bytes);
 
-    std.log.debug("Clipboard: {s}\n", .{bytes});
+    std.log.debug("Clipboard: {s}", .{bytes});
 }
