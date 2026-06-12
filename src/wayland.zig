@@ -78,12 +78,21 @@ fn regListener(reg: *Registry, ev: Event, userdata: *Globals) void {
     }
 }
 
+fn runEventLoop(self: *WaylandBackend) !void {
+    while (self.display.dispatch() == .SUCCESS) {
+        @branchHint(.likely);
+    }
+}
+
 pub fn init(io: Io, alloc: Allocator) !*WaylandBackend {
     const backend = try alloc.create(WaylandBackend);
     errdefer alloc.destroy(backend);
 
     backend.* = try _init(io, alloc);
     backend.setDataDeviceListener();
+
+    // this is not the way, figure out later
+    _ = try io.concurrent(runEventLoop, .{backend});
 
     return backend;
 }
@@ -163,9 +172,4 @@ test "init and clean up" {
 
     var wayland_backend = try init(io, alloc);
     defer wayland_backend.deinit();
-
-    while (wayland_backend.display.dispatch() == .SUCCESS) {
-        // TODO: End-to-end test by pushing and pulling from clipboard,
-        //       for now I am happy if we see some text.
-    }
 }
