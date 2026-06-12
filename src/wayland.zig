@@ -16,6 +16,8 @@
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
+const c = std.c;
+const posix = std.posix;
 
 const wayland = @import("wayland");
 const wl = wayland.client.wl;
@@ -24,6 +26,7 @@ const Event = Registry.Event;
 const Display = wl.Display;
 const Seat = wl.Seat;
 
+const Clipping = @import("clipping.zig");
 const ext = @import("protocols/ext.zig");
 const zwlr = @import("protocols/zwlr.zig");
 
@@ -36,6 +39,9 @@ seat: *Seat,
 io: Io,
 alloc: Allocator,
 dev: DataControlDevice,
+/// Eventfd written to by `deinit` to wake the event loop out of its poll.
+wake_fd: posix.fd_t,
+event_loop: Io.Future(EventLoopError!void),
 
 const Globals = struct {
     ext_dcm: ?*ext.Manager = null,
@@ -78,9 +84,59 @@ fn regListener(reg: *Registry, ev: Event, userdata: *Globals) void {
     }
 }
 
-fn runEventLoop(self: *WaylandBackend) !void {
-    while (self.display.dispatch() == .SUCCESS) {
-        @branchHint(.likely);
+pub const EventLoopError = posix.PollError || error{
+    DispatchFailed,
+    FlushFailed,
+    ReadFailed,
+    DisplayClosed,
+};
+
+/// Runs as an `Io.concurrent` task: sleeps in poll on the display socket and
+/// `wake_fd`, then reads and dispatches compositor events. Listener callbacks
+/// run on this task.
+fn runEventLoop(self: *WaylandBackend) EventLoopError!void {
+    const display_fd = self.display.getFd();
+
+    while (true) {
+        while (!self.display.prepareRead()) {
+            if (self.display.dispatchPending() != .SUCCESS) return error.DispatchFailed;
+        }
+
+        switch (self.display.flush()) {
+            .SUCCESS, .AGAIN => {},
+            else => {
+                self.display.cancelRead();
+                return error.FlushFailed;
+            },
+        }
+
+        var fds = [_]posix.pollfd{
+            .{ .fd = display_fd, .events = posix.POLL.IN, .revents = 0 },
+            .{ .fd = self.wake_fd, .events = posix.POLL.IN, .revents = 0 },
+        };
+
+        _ = posix.poll(&fds, -1) catch |err| {
+            self.display.cancelRead();
+            return err;
+        };
+
+        if (fds[1].revents != 0) {
+            self.display.cancelRead();
+            return;
+        }
+
+        if (fds[0].revents & (posix.POLL.ERR | posix.POLL.HUP) != 0) {
+            self.display.cancelRead();
+            return error.DisplayClosed;
+        }
+
+        if (fds[0].revents & posix.POLL.IN == 0) {
+            self.display.cancelRead();
+            continue;
+        }
+
+        if (self.display.readEvents() != .SUCCESS) return error.ReadFailed;
+        if (self.display.dispatchPending() != .SUCCESS) return error.DispatchFailed;
     }
 }
 
@@ -88,17 +144,10 @@ pub fn init(io: Io, alloc: Allocator) !*WaylandBackend {
     const backend = try alloc.create(WaylandBackend);
     errdefer alloc.destroy(backend);
 
-    backend.* = try _init(io, alloc);
-    backend.setDataDeviceListener();
+    const wake_fd = c.eventfd(0, std.os.linux.EFD.CLOEXEC);
+    if (wake_fd == -1) return error.EventFdFailed;
+    errdefer _ = c.close(wake_fd);
 
-    // this is not the way, figure out later
-    _ = try io.concurrent(runEventLoop, .{backend});
-
-    return backend;
-}
-
-/// This handles initialising most of the state we need but call `init` to handle setting up some event listeners for you.
-fn _init(io: Io, alloc: Allocator) !WaylandBackend {
     const display = try Display.connect(null);
     const registry = try display.getRegistry();
 
@@ -120,7 +169,7 @@ fn _init(io: Io, alloc: Allocator) !WaylandBackend {
     const seat = globals.seat.?;
     const data_dev = try getDataDevice(dcm.?, seat);
 
-    return .{
+    backend.* = .{
         .display = display,
         .registry = registry,
         .dcm = dcm.?,
@@ -128,10 +177,26 @@ fn _init(io: Io, alloc: Allocator) !WaylandBackend {
         .io = io,
         .dev = data_dev,
         .alloc = alloc,
+        .wake_fd = wake_fd,
+        .event_loop = undefined,
     };
+
+    backend.setDataDeviceListener();
+    backend.event_loop = try io.concurrent(runEventLoop, .{backend});
+
+    return backend;
 }
 
 pub fn deinit(self: *WaylandBackend) void {
+    // Wake the event loop and wait for it to exit before destroying the
+    // objects it dispatches on.
+    const wake: u64 = 1;
+    _ = c.write(self.wake_fd, std.mem.asBytes(&wake), @sizeOf(u64));
+    self.event_loop.await(self.io) catch |err| {
+        std.log.err("Wayland event loop exited with {t}.", .{err});
+    };
+    _ = c.close(self.wake_fd);
+
     if (globals.ext_dcm) |ext_mgr| {
         ext_mgr.destroy();
     }
