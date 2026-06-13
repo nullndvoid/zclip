@@ -26,6 +26,7 @@ const Event = Registry.Event;
 const Display = wl.Display;
 const Seat = wl.Seat;
 
+const Clipboard = @import("clipboard.zig");
 const Clipping = @import("clipping.zig");
 const ext = @import("protocols/ext.zig");
 const zwlr = @import("protocols/zwlr.zig");
@@ -42,6 +43,9 @@ dev: DataControlDevice,
 /// Eventfd written to by `deinit` to wake the event loop out of its poll.
 wake_fd: posix.fd_t,
 event_loop: Io.Future(EventLoopError!void),
+// Event loop writes to this queue and is read by the `Clipboard`.
+read_queue: Io.Queue(Clipping),
+read_queue_clip_buf: []Clipping,
 
 const Globals = struct {
     ext_dcm: ?*ext.Manager = null,
@@ -169,6 +173,8 @@ pub fn init(io: Io, alloc: Allocator) !*WaylandBackend {
     const seat = globals.seat.?;
     const data_dev = try getDataDevice(dcm.?, seat);
 
+    const read_queue_clip_buf = try alloc.alloc(Clipping, 5);
+
     backend.* = .{
         .display = display,
         .registry = registry,
@@ -179,6 +185,8 @@ pub fn init(io: Io, alloc: Allocator) !*WaylandBackend {
         .alloc = alloc,
         .wake_fd = wake_fd,
         .event_loop = undefined,
+        .read_queue_clip_buf = read_queue_clip_buf,
+        .read_queue = .init(read_queue_clip_buf),
     };
 
     backend.setDataDeviceListener();
@@ -207,6 +215,7 @@ pub fn deinit(self: *WaylandBackend) void {
 
     self.registry.destroy();
     self.display.disconnect();
+    self.alloc.free(self.read_queue_clip_buf);
     self.alloc.destroy(self);
 }
 

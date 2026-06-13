@@ -109,12 +109,20 @@ fn readOffer(parent: *Parent, offer: *Offer, mime_type: [:0]const u8) void {
     var file_rdr = read_file.reader(io, &rdr_buf);
     const rdr = &file_rdr.interface;
 
+    // Remembering parent.alloc is wrapped in an arena, don't bother freeing here.
     const bytes = rdr.allocRemaining(parent.alloc, .unlimited) catch return;
-    defer parent.alloc.free(bytes);
 
     if (mimes.isText(mime_type)) {
         std.log.debug("Clipboard [{s}]: {s}", .{ mime_type, bytes });
     } else {
         std.log.debug("Clipboard [{s}]: {d} bytes", .{ mime_type, bytes.len });
     }
+
+    const mime_type_duped = parent.alloc.dupe(u8, mime_type) catch return;
+
+    parent.read_queue.putOne(parent.io, .{
+        .data = bytes,
+        .mime_type = mime_type_duped,
+        .node = .{},
+    }) catch return;
 }

@@ -16,5 +16,5 @@
 const std = @import("std");
 
 data: []const u8,
-node: std.DoublyLinkedList.Node,
 mime_type: []const u8,
+node: std.DoublyLinkedList.Node,
