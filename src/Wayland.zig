@@ -13,7 +13,7 @@
 
 //! Wayland interface for clipboard management. Call init before you do anything else.
 const std = @import("std");
-const Io  = std.Io;
+const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
 const wayland = @import("wayland").client;
@@ -21,6 +21,8 @@ const wl = wayland.wl;
 const Display = wl.Display;
 const Registry = wl.Registry;
 const Seat = wl.Seat;
+
+const Mime = @import("Mime.zig");
 
 const Wayland = @This();
 
@@ -39,6 +41,7 @@ listener_ctx: *ListenerContext,
 const ListenerContext = struct {
     alloc: Allocator,
     io: Io,
+    current_mime: Mime,
 };
 
 pub fn init(io: Io, alloc: Allocator) !Wayland {
@@ -68,6 +71,9 @@ pub fn init(io: Io, alloc: Allocator) !Wayland {
     listener_ctx.io = io;
 
     switch (dev) {
+        // TODO: Possibly use const fn pointers to set callbacks for clipboard updates?
+        //       Might be simpler to Queue them and pull entries from the queue
+        //       on the frontend? See pkg wayland.zig, grep for `HandlerFn` if using callbacks.
         .Ext => |ext| {
             ext.setListener(*ListenerContext, Ext.listener, &listener_ctx);
         },
@@ -153,7 +159,45 @@ const Ext = struct {
     pub const Source = wayland.ext.DataControlSourceV1;
     pub const Offer = wayland.ext.DataControlOfferV1;
 
-    pub fn Listener() void {}
+    fn dataOfferListener(_: *Offer, event: Offer.Event, ctx: *ListenerContext) void {
+        switch (event) {
+            .offer => |offer| {
+                const mime_type = offer.mime_type;
+
+                std.log.debug("Got MIME type: {s}", .{mime_type});
+
+                ctx.current_mime.append(ctx.alloc, mime_type) catch |err| {
+                    std.log.err("Could not append to MIME type list: {t}", .{err});
+                    return;
+                };
+            },
+        }
+    }
+
+    pub fn listener(_: *Device, event: Device.Event, userdata: *ListenerContext) void {
+        switch (event) {
+            .data_offer => |off| {
+                off.id.setListener(*ListenerContext, dataOfferListener, userdata);
+            },
+            .selection => |sel| {
+                // Since selection fires after all of the data_offer events,
+                // we have collected all the MIME types.
+                defer userdata.current_mime.deinit(userdata.alloc);
+
+                const offer = sel.id orelse {
+                    std.log.debug("Got null data control offer. Returning.", .{});
+                    return;
+                };
+
+                _ = offer;
+                // offer.receive(_mime_type: [*:0]const u8, _fd: i32)
+            },
+            // For now we ignore these.
+            .primary_selection => {},
+            // TODO: Handle this.
+            .finished => {},
+        }
+    }
 };
 
 /// See doc comment on `Ext`. Not yet implemented.
