@@ -18,12 +18,6 @@ pub fn build(b: *std.Build) void {
 
     var wayland: *std.Build.Module = undefined;
 
-    const perror = b.addTranslateC(.{
-        .root_source_file = b.path("src/perror.h"),
-        .optimize = optimize,
-        .target = target,
-    });
-
     if (platform == .wayland) {
         const scanner = Scanner.create(b, .{});
         wayland = b.createModule(.{ .root_source_file = scanner.result });
@@ -49,8 +43,6 @@ pub fn build(b: *std.Build) void {
         mod.addImport("wayland", wayland);
         mod.linkSystemLibrary("wayland-client", .{});
     }
-
-    mod.addImport("c", perror.addModule("c"));
 
     const exe = b.addExecutable(.{
         .name = "zclip",
