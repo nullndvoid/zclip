@@ -28,8 +28,6 @@ const text_types = [_][:0]const u8{
     "TEXT",
 };
 
-const max_mime_size = 255;
-
 /// List of MIME types.
 mime_types: std.ArrayList([:0]const u8) = .empty,
 
@@ -48,17 +46,23 @@ got_plain_text: bool = false,
 /// and videos.
 ///
 /// For simplicity we make a list of MIME types and select from these.
-pub fn choose(self: *const Mime) [max_mime_size:0]u8 {
+pub fn choose(self: *const Mime) [:0]const u8 {
     const got = self.mime_types.items;
 
     for (got) |mt| {
+        if (std.mem.eql(u8, mt, "text/plain")) {
+            return mt;
+        }
+
         std.log.debug("choose: {s}", .{mt});
     }
 
-    return "text/plain"; // Stub for the time being.
+    // This should not be invalidated since choose is called after building the list.
+    // For now return anything.
+    return got[0];
 }
 
-pub fn deinit(self: Mime, alloc: Allocator) void {
+pub fn deinit(self: *Mime, alloc: Allocator) void {
     self.mime_types.deinit(alloc);
 }
 
@@ -68,6 +72,8 @@ fn isPlainText(mime_type: [:0]const u8) bool {
     for (text_types) |tt| {
         if (std.mem.eql(u8, mime_type, tt)) return true;
     }
+
+    return false;
 }
 
 pub fn append(self: *Mime, alloc: Allocator, mime_type: [:0]const u8) !void {

@@ -22,6 +22,7 @@ const Display = wl.Display;
 const Registry = wl.Registry;
 const Seat = wl.Seat;
 
+const Clip = @import("Clip.zig");
 const Mime = @import("Mime.zig");
 
 const Wayland = @This();
@@ -37,6 +38,9 @@ dev: DataControlDevice,
 /// Stored for later deallocation.
 listener_ctx: *ListenerContext,
 
+/// Stub function, to be overwritten by caller after `.init`.
+fn default_on_read(_: Clip, _: *anyopaque) void {}
+
 /// Passed into `DataControlDevice` listeners.
 const ListenerContext = struct {
     /// This is actually wrapped in an `ArenaAllocator` in `init`.
@@ -45,6 +49,10 @@ const ListenerContext = struct {
     alloc: Allocator,
     io: Io,
     current_mime: Mime,
+    /// A callback ran on read.
+    on_read: *const fn (clip: Clip, userdata: *anyopaque) void = default_on_read,
+    /// Passed into `on_read`.
+    userdata: *anyopaque,
 };
 
 pub fn init(io: Io, alloc: Allocator) !Wayland {
@@ -69,9 +77,9 @@ pub fn init(io: Io, alloc: Allocator) !Wayland {
 
     const dev = try dcm.getDataDevice(seat);
 
-    const arena = std.heap.ArenaAllocator.init(alloc);
+    var arena = std.heap.ArenaAllocator.init(alloc);
 
-    var listener_ctx = try alloc.create(ListenerContext);
+    var listener_ctx = try arena.allocator().create(ListenerContext);
     listener_ctx.alloc = arena.allocator();
     listener_ctx.io = io;
 
@@ -80,7 +88,7 @@ pub fn init(io: Io, alloc: Allocator) !Wayland {
         //       Might be simpler to Queue them and pull entries from the queue
         //       on the frontend? See pkg wayland.zig, grep for `HandlerFn` if using callbacks.
         .Ext => |ext| {
-            ext.setListener(*ListenerContext, Ext.listener, &listener_ctx);
+            ext.setListener(*ListenerContext, Ext.listener, listener_ctx);
         },
     }
 
@@ -95,10 +103,15 @@ pub fn init(io: Io, alloc: Allocator) !Wayland {
     };
 }
 
+pub fn setOnRead(self: *Wayland, comptime T: type, callback: *const fn (clip: Clip, userdata: *T) void, userdata: *T) void {
+    self.listener_ctx.userdata = @ptrCast(userdata);
+    self.listener_ctx.on_read = callback;
+}
+
 pub fn deinit(self: Wayland) void {
     self.dev.destroy();
     self.dcm.destroy();
-    self.alloc.destroy(self.listener_ctx);
+    self.arena.deinit();
 
     self.registry.destroy();
     self.display.disconnect();
@@ -171,7 +184,7 @@ const Ext = struct {
     fn dataOfferListener(_: *Offer, event: Offer.Event, ctx: *ListenerContext) void {
         switch (event) {
             .offer => |offer| {
-                const mime_type = offer.mime_type;
+                const mime_type: [:0]const u8 = std.mem.span(offer.mime_type);
 
                 std.log.debug("Got MIME type: {s}", .{mime_type});
 
@@ -207,13 +220,16 @@ const Ext = struct {
                 }
 
                 const read_fd = fds[0];
-                const file = std.Io.File{ .handle = read_fd };
+                const file = std.Io.File{
+                    .handle = read_fd,
+                    .flags = .{ .nonblocking = false },
+                };
                 defer file.close(userdata.io);
 
                 const write_fd = fds[1];
 
                 offer.receive(ask_for, write_fd);
-                std.c.close(write_fd);
+                _ = std.c.close(write_fd);
 
                 var reader_buf: [pipe_buf_size]u8 = undefined;
 
@@ -256,6 +272,9 @@ fn registryListener(reg: *Registry, event: Registry.Event, globals: *Globals) vo
 }
 
 test "init/deinit" {
-    const backend = try Wayland.init();
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const backend = try Wayland.init(io, alloc);
     defer backend.deinit();
 }
