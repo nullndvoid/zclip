@@ -26,7 +26,7 @@ const Mime = @import("Mime.zig");
 
 const Wayland = @This();
 
-alloc: Allocator,
+arena: std.heap.ArenaAllocator,
 
 display: *Display,
 registry: *Registry,
@@ -37,8 +37,11 @@ dev: DataControlDevice,
 /// Stored for later deallocation.
 listener_ctx: *ListenerContext,
 
-// Passed into DataControlDevice listeners.
+/// Passed into `DataControlDevice` listeners.
 const ListenerContext = struct {
+    /// This is actually wrapped in an `ArenaAllocator` in `init`.
+    /// i.e. there's no need to free anything we allocate in the
+    /// listener.
     alloc: Allocator,
     io: Io,
     current_mime: Mime,
@@ -66,8 +69,10 @@ pub fn init(io: Io, alloc: Allocator) !Wayland {
 
     const dev = try dcm.getDataDevice(seat);
 
+    const arena = std.heap.ArenaAllocator.init(alloc);
+
     var listener_ctx = try alloc.create(ListenerContext);
-    listener_ctx.alloc = alloc;
+    listener_ctx.alloc = arena.allocator();
     listener_ctx.io = io;
 
     switch (dev) {
@@ -80,7 +85,7 @@ pub fn init(io: Io, alloc: Allocator) !Wayland {
     }
 
     return .{
-        .alloc = alloc,
+        .arena = arena,
         .display = display,
         .registry = reg,
         .seat = seat,
@@ -151,6 +156,10 @@ const Globals = struct {
     seat: ?*Seat = null,
 };
 
+/// Linux sets this to 4096. I figured we can have a streaming reader with this
+/// bufsize. See the manpage pipe(7).
+const pipe_buf_size = 4096;
+
 /// Handles the `ext_data_control` protocol. I will support deprecated zwlr
 /// later if need be. Should contain event handlers.
 const Ext = struct {
@@ -189,8 +198,36 @@ const Ext = struct {
                     return;
                 };
 
-                _ = offer;
-                // offer.receive(_mime_type: [*:0]const u8, _fd: i32)
+                const ask_for = userdata.current_mime.choose();
+
+                var fds: [2]i32 = @splat(0);
+                if (std.c.pipe(&fds) == -1) {
+                    std.log.err("Ext.listener failed to create pipe. Some data may be lost.", .{});
+                    return;
+                }
+
+                const read_fd = fds[0];
+                const file = std.Io.File{ .handle = read_fd };
+                defer file.close(userdata.io);
+
+                const write_fd = fds[1];
+
+                offer.receive(ask_for, write_fd);
+                std.c.close(write_fd);
+
+                var reader_buf: [pipe_buf_size]u8 = undefined;
+
+                // Now read the contents until EOF.
+                var file_rdr = file.readerStreaming(userdata.io, &reader_buf);
+                const rdr = &file_rdr.interface;
+
+                const contents = rdr.allocRemaining(userdata.alloc, .unlimited) catch |err| {
+                    std.log.err("Ext.listener: couldn't allocate memory for clipboard contents. {t}. Some data may be lost.", .{err});
+                    return;
+                };
+                _ = contents; // autofix
+
+                // TODO: Execute a callback with read Clip.
             },
             // For now we ignore these.
             .primary_selection => {},
