@@ -103,9 +103,16 @@ pub fn init(io: Io, alloc: Allocator) !Wayland {
     };
 }
 
-pub fn setOnRead(self: *Wayland, comptime T: type, callback: *const fn (clip: Clip, userdata: *T) void, userdata: *T) void {
+pub fn setOnRead(self: *Wayland, comptime T: type, comptime callback: *const fn (clip: Clip, userdata: *T) void, userdata: *T) void {
+    switch (@typeInfo(@TypeOf(callback))) {
+        .@"fn" => |f| {
+            if (f.params[0].type.? != Clip) @compileError("Callback needs to take a Clip in first argument!");
+        },
+        else => {},
+    }
+
     self.listener_ctx.userdata = @ptrCast(userdata);
-    self.listener_ctx.on_read = callback;
+    // self.listener_ctx.on_read = ;
 }
 
 pub fn deinit(self: Wayland) void {
@@ -275,6 +282,10 @@ test "init/deinit" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
-    const backend = try Wayland.init(io, alloc);
+    var backend = try Wayland.init(io, alloc);
     defer backend.deinit();
+
+    backend.setOnRead(void, test_on_read, @constCast(&{}));
 }
+
+fn test_on_read(_: Clip, _: *void) void {}
