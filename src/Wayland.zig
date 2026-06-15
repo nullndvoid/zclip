@@ -239,6 +239,14 @@ const Ext = struct {
                 const rdr = &file_rdr.interface;
                 _ = rdr; // autofix
 
+                // Nevermind the segfault is in the reader.
+                // const data = rdr.allocRemaining(userdata.alloc, .unlimited) catch |err| {
+                //     std.log.err("Ext.listener: couldn't allocate memory for clipboard contents. {t}. Some data may be lost.", .{err});
+                //     return;
+                // };
+
+                // std.log.info("CLIPPING: {s}", .{data});
+
                 // TODO: Execute a callback with read Clip.
                 // userdata.on_read(Clip{
                 //     .data = rdr.allocRemaining(userdata.alloc, .unlimited) catch |err| {
@@ -247,6 +255,11 @@ const Ext = struct {
                 //     },
                 //     .mime_type = ask_for,
                 // }, userdata.userdata);
+
+                userdata.on_read(
+                    Clip{ .data = "debug!", .mime_type = "text/plain;charset=utf-8" },
+                    userdata.userdata,
+                );
             },
             // For now we ignore these.
             .primary_selection => {},
