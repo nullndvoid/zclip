@@ -237,15 +237,16 @@ const Ext = struct {
                 // Now read the contents until EOF.
                 var file_rdr = file.readerStreaming(userdata.io, &reader_buf);
                 const rdr = &file_rdr.interface;
+                _ = rdr; // autofix
 
                 // TODO: Execute a callback with read Clip.
-                userdata.on_read(Clip{
-                    .data = rdr.allocRemaining(userdata.alloc, .unlimited) catch |err| {
-                        std.log.err("Ext.listener: couldn't allocate memory for clipboard contents. {t}. Some data may be lost.", .{err});
-                        return;
-                    },
-                    .mime_type = ask_for,
-                }, userdata.userdata);
+                // userdata.on_read(Clip{
+                //     .data = rdr.allocRemaining(userdata.alloc, .unlimited) catch |err| {
+                //         std.log.err("Ext.listener: couldn't allocate memory for clipboard contents. {t}. Some data may be lost.", .{err});
+                //         return;
+                //     },
+                //     .mime_type = ask_for,
+                // }, userdata.userdata);
             },
             // For now we ignore these.
             .primary_selection => {},
@@ -282,6 +283,7 @@ test "init/deinit" {
     var backend = try Wayland.init(io, alloc);
     defer backend.deinit();
 
+    // Segfault originates on call of callback. Investigate later.
     backend.setOnRead(void, test_on_read, @constCast(&{}));
 
     while (backend.display.dispatch() == .SUCCESS) {}
