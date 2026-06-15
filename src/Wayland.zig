@@ -27,7 +27,7 @@ const Mime = @import("Mime.zig");
 
 const Wayland = @This();
 
-arena: std.heap.ArenaAllocator,
+arena: *std.heap.ArenaAllocator,
 
 display: *Display,
 registry: *Registry,
@@ -55,7 +55,7 @@ const ListenerContext = struct {
     userdata: *anyopaque,
 };
 
-pub fn init(io: Io, alloc: Allocator) !Wayland {
+pub fn init(io: Io, arena: *std.heap.ArenaAllocator) !Wayland {
     const display = try Display.connect(null);
     var reg = try display.getRegistry();
     var globals = Globals{};
@@ -77,12 +77,10 @@ pub fn init(io: Io, alloc: Allocator) !Wayland {
 
     const dev = try dcm.getDataDevice(seat);
 
-    var arena = std.heap.ArenaAllocator.init(alloc);
-
     var listener_ctx = try arena.allocator().create(ListenerContext);
     listener_ctx.alloc = arena.allocator();
     listener_ctx.io = io;
-    listener_ctx.current_mime = try .init(alloc, 16);
+    listener_ctx.current_mime = try .init(arena.allocator(), 16);
 
     switch (dev) {
         // TODO: Possibly use const fn pointers to set callbacks for clipboard updates?
@@ -112,7 +110,6 @@ pub fn setOnRead(self: *Wayland, comptime T: type, comptime callback: *const fn 
 pub fn deinit(self: Wayland) void {
     self.dev.destroy();
     self.dcm.destroy();
-    self.arena.deinit();
 
     self.registry.destroy();
     self.display.disconnect();
@@ -237,29 +234,18 @@ const Ext = struct {
                 // Now read the contents until EOF.
                 var file_rdr = file.readerStreaming(userdata.io, &reader_buf);
                 const rdr = &file_rdr.interface;
-                _ = rdr; // autofix
 
                 // Nevermind the segfault is in the reader.
-                // const data = rdr.allocRemaining(userdata.alloc, .unlimited) catch |err| {
-                //     std.log.err("Ext.listener: couldn't allocate memory for clipboard contents. {t}. Some data may be lost.", .{err});
-                //     return;
-                // };
-
-                // std.log.info("CLIPPING: {s}", .{data});
+                const data = rdr.allocRemaining(userdata.alloc, .unlimited) catch |err| {
+                    std.log.err("Ext.listener: couldn't allocate memory for clipboard contents. {t}. Some data may be lost.", .{err});
+                    return;
+                };
 
                 // TODO: Execute a callback with read Clip.
-                // userdata.on_read(Clip{
-                //     .data = rdr.allocRemaining(userdata.alloc, .unlimited) catch |err| {
-                //         std.log.err("Ext.listener: couldn't allocate memory for clipboard contents. {t}. Some data may be lost.", .{err});
-                //         return;
-                //     },
-                //     .mime_type = ask_for,
-                // }, userdata.userdata);
-
-                userdata.on_read(
-                    Clip{ .data = "debug!", .mime_type = "text/plain;charset=utf-8" },
-                    userdata.userdata,
-                );
+                userdata.on_read(Clip{
+                    .data = data,
+                    .mime_type = ask_for,
+                }, userdata.userdata);
             },
             // For now we ignore these.
             .primary_selection => {},
@@ -293,7 +279,10 @@ test "init/deinit" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
-    var backend = try Wayland.init(io, alloc);
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+
+    var backend = try Wayland.init(io, &arena);
     defer backend.deinit();
 
     // Segfault originates on call of callback. Investigate later.
