@@ -82,6 +82,7 @@ pub fn init(io: Io, alloc: Allocator) !Wayland {
     var listener_ctx = try arena.allocator().create(ListenerContext);
     listener_ctx.alloc = arena.allocator();
     listener_ctx.io = io;
+    listener_ctx.current_mime = try .init(alloc, 16);
 
     switch (dev) {
         // TODO: Possibly use const fn pointers to set callbacks for clipboard updates?
@@ -104,15 +105,8 @@ pub fn init(io: Io, alloc: Allocator) !Wayland {
 }
 
 pub fn setOnRead(self: *Wayland, comptime T: type, comptime callback: *const fn (clip: Clip, userdata: *T) void, userdata: *T) void {
-    switch (@typeInfo(@TypeOf(callback))) {
-        .@"fn" => |f| {
-            if (f.params[0].type.? != Clip) @compileError("Callback needs to take a Clip in first argument!");
-        },
-        else => {},
-    }
-
+    self.listener_ctx.on_read = @ptrCast(@alignCast(callback));
     self.listener_ctx.userdata = @ptrCast(userdata);
-    // self.listener_ctx.on_read = ;
 }
 
 pub fn deinit(self: Wayland) void {
@@ -195,9 +189,9 @@ const Ext = struct {
 
                 std.log.debug("Got MIME type: {s}", .{mime_type});
 
-                ctx.current_mime.append(ctx.alloc, mime_type) catch |err| {
-                    std.log.err("Could not append to MIME type list: {t}", .{err});
-                    return;
+                ctx.current_mime.append(mime_type) catch |err| {
+                    std.log.err("Could not append to MIME type list: {t}. Was capacity exceeded?", .{err});
+                    // return;
                 };
             },
         }
@@ -211,14 +205,14 @@ const Ext = struct {
             .selection => |sel| {
                 // Since selection fires after all of the data_offer events,
                 // we have collected all the MIME types.
-                defer userdata.current_mime.deinit(userdata.alloc);
+                defer userdata.current_mime.reset();
 
                 const offer = sel.id orelse {
                     std.log.debug("Got null data control offer. Returning.", .{});
                     return;
                 };
 
-                const ask_for = userdata.current_mime.choose();
+                const ask_for = userdata.current_mime.choose() orelse "text/plain;charset=utf-8";
 
                 var fds: [2]i32 = @splat(0);
                 if (std.c.pipe(&fds) == -1) {
@@ -244,18 +238,21 @@ const Ext = struct {
                 var file_rdr = file.readerStreaming(userdata.io, &reader_buf);
                 const rdr = &file_rdr.interface;
 
-                const contents = rdr.allocRemaining(userdata.alloc, .unlimited) catch |err| {
-                    std.log.err("Ext.listener: couldn't allocate memory for clipboard contents. {t}. Some data may be lost.", .{err});
-                    return;
-                };
-                _ = contents; // autofix
-
                 // TODO: Execute a callback with read Clip.
+                userdata.on_read(Clip{
+                    .data = rdr.allocRemaining(userdata.alloc, .unlimited) catch |err| {
+                        std.log.err("Ext.listener: couldn't allocate memory for clipboard contents. {t}. Some data may be lost.", .{err});
+                        return;
+                    },
+                    .mime_type = ask_for,
+                }, userdata.userdata);
             },
             // For now we ignore these.
             .primary_selection => {},
-            // TODO: Handle this.
-            .finished => {},
+            // TODO: Handle this. And also signal handlers.
+            .finished => {
+                userdata.current_mime.deinit();
+            },
         }
     }
 };
@@ -286,6 +283,14 @@ test "init/deinit" {
     defer backend.deinit();
 
     backend.setOnRead(void, test_on_read, @constCast(&{}));
+
+    while (backend.display.dispatch() == .SUCCESS) {}
 }
 
-fn test_on_read(_: Clip, _: *void) void {}
+fn test_on_read(clip: Clip, _: *void) void {
+    if (std.mem.eql(u8, clip.mime_type, "text/plain;charset=utf-8")) {
+        std.log.debug("test_on_read got clip: {s}", .{clip.data});
+    } else {
+        std.log.debug("test_on_read got clip ({s})", .{clip.mime_type});
+    }
+}

@@ -35,6 +35,21 @@ mime_types: std.ArrayList([:0]const u8) = .empty,
 /// or text/plain. We only need one of these!
 got_plain_text: bool = false,
 
+allocator: Allocator,
+
+pub fn init(alloc: Allocator, max_capacity: usize) !Mime {
+    return .{
+        .allocator = alloc,
+        .mime_types = try .initCapacity(alloc, max_capacity),
+    };
+}
+
+/// Called on reciept of new set of MIME types.
+pub fn reset(self: *Mime) void {
+    self.mime_types.clearRetainingCapacity();
+    self.got_plain_text = false;
+}
+
 /// We get a list of MIME types from the compositor. We want to prefer text,
 /// and possibly ignore internal application MIME types. If they are the only
 /// type specified, then we can pipe to file -i - and check the encoding of the
@@ -46,24 +61,18 @@ got_plain_text: bool = false,
 /// and videos.
 ///
 /// For simplicity we make a list of MIME types and select from these.
-pub fn choose(self: *const Mime) [:0]const u8 {
-    const got = self.mime_types.items;
-
-    for (got) |mt| {
-        if (std.mem.eql(u8, mt, "text/plain")) {
-            return mt;
-        }
-
-        std.log.debug("choose: {s}", .{mt});
+pub fn choose(self: *const Mime) ?[:0]const u8 {
+    for (self.mime_types.items) |it| {
+        std.log.debug("In list: {s}", .{it});
     }
 
     // This should not be invalidated since choose is called after building the list.
     // For now return anything.
-    return got[0];
+    return null;
 }
 
-pub fn deinit(self: *Mime, alloc: Allocator) void {
-    self.mime_types.deinit(alloc);
+pub fn deinit(self: *Mime) void {
+    self.mime_types.deinit(self.allocator);
 }
 
 /// Used to deduplicate useless other MIME types if they are referring to text/plain,
@@ -76,8 +85,9 @@ fn isPlainText(mime_type: [:0]const u8) bool {
     return false;
 }
 
-pub fn append(self: *Mime, alloc: Allocator, mime_type: [:0]const u8) !void {
+pub fn append(self: *Mime, mime_type: [:0]const u8) !void {
+    if (self.mime_types.items.len == self.mime_types.capacity) return error.AtCapacity;
     if (self.mime_types.items.len >= 1 and self.got_plain_text and isPlainText(mime_type)) return;
 
-    try self.mime_types.append(alloc, mime_type);
+    self.mime_types.appendAssumeCapacity(mime_type);
 }
