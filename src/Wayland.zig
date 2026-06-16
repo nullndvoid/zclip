@@ -235,11 +235,15 @@ const Ext = struct {
                 var file_rdr = file.readerStreaming(userdata.io, &reader_buf);
                 const rdr = &file_rdr.interface;
 
-                // Nevermind the segfault is in the reader.
                 const data = rdr.allocRemaining(userdata.alloc, .unlimited) catch |err| {
                     std.log.err("Ext.listener: couldn't allocate memory for clipboard contents. {t}. Some data may be lost.", .{err});
                     return;
                 };
+
+                // Seems like we run once and then exit for reasons unknown???
+                // Like we are not hitting the .selection event.
+
+                std.log.debug("got: {s}", .{data});
 
                 // TODO: Execute a callback with read Clip.
                 userdata.on_read(Clip{
@@ -285,7 +289,6 @@ test "init/deinit" {
     var backend = try Wayland.init(io, &arena);
     defer backend.deinit();
 
-    // Segfault originates on call of callback. Investigate later.
     backend.setOnRead(void, test_on_read, @constCast(&{}));
 
     while (backend.display.dispatch() == .SUCCESS) {}
