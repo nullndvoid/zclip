@@ -59,7 +59,8 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "zclip", .module = mod },
             },
         }),
-        .use_llvm = false,
+        .use_llvm = true,
+        .use_lld = true,
     });
 
     b.installArtifact(exe);
@@ -80,7 +81,8 @@ pub fn build(b: *std.Build) void {
             .mode = .simple,
             .path = b.path("test_runner.zig"),
         },
-        .use_llvm = false,
+        .use_llvm = true,
+        .use_lld = true,
     });
 
     const run_mod_tests = b.addRunArtifact(mod_tests);
@@ -91,7 +93,8 @@ pub fn build(b: *std.Build) void {
             .mode = .simple,
             .path = b.path("test_runner.zig"),
         },
-        .use_llvm = false,
+        .use_llvm = true,
+        .use_lld = true,
     });
 
     const run_exe_tests = b.addRunArtifact(exe_tests);

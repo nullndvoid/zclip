@@ -18,5 +18,15 @@ const zclip = @import("zclip");
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
-    _ = io; // autofix
+    const alloc = init.gpa;
+
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+
+    var backend = try zclip.Backend.init(io, &arena);
+    defer backend.deinit();
+
+    // backend.setOnRead(void, test_on_read, @constCast(&{}));
+
+    while (backend.display.dispatch() == .SUCCESS) {}
 }
