@@ -48,6 +48,9 @@ const ListenerContext = struct {
     /// listener.
     alloc: Allocator,
     io: Io,
+    /// Needed so the listener can flush queued requests (e.g. `receive`) to
+    /// the compositor mid-callback, before we block reading the pipe.
+    display: *Display,
     current_mime: Mime,
     /// A callback ran on read.
     on_read: *const fn (clip: Clip, userdata: *anyopaque) void = default_on_read,
@@ -80,7 +83,10 @@ pub fn init(io: Io, arena: *std.heap.ArenaAllocator) !Wayland {
     var listener_ctx = try arena.allocator().create(ListenerContext);
     listener_ctx.alloc = arena.allocator();
     listener_ctx.io = io;
+    listener_ctx.display = display;
     listener_ctx.current_mime = try .init(arena.allocator(), 16);
+    listener_ctx.on_read = default_on_read;
+    listener_ctx.userdata = undefined;
 
     switch (dev) {
         // TODO: Possibly use const fn pointers to set callbacks for clipboard updates?
@@ -184,11 +190,10 @@ const Ext = struct {
             .offer => |offer| {
                 const mime_type: [:0]const u8 = std.mem.span(offer.mime_type);
 
-                std.log.debug("Got MIME type: {s}", .{mime_type});
+                // std.log.debug("Got MIME type: {s}", .{mime_type});
 
                 ctx.current_mime.append(mime_type) catch |err| {
                     std.log.err("Could not append to MIME type list: {t}. Was capacity exceeded?", .{err});
-                    // return;
                 };
             },
         }
@@ -235,6 +240,14 @@ const Ext = struct {
                 const write_fd = fds[1];
 
                 offer.receive(ask_for, write_fd);
+
+                const flush_ret = userdata.display.flush();
+                if (flush_ret != .SUCCESS) {
+                    std.log.err("Ext.listener failed to flush receive request: {t}. Some data may be lost.", .{flush_ret});
+                    _ = std.c.close(write_fd);
+                    return;
+                }
+
                 _ = std.c.close(write_fd);
 
                 var reader_buf: [pipe_buf_size]u8 = undefined;
@@ -247,9 +260,6 @@ const Ext = struct {
                     std.log.err("Ext.listener: couldn't allocate memory for clipboard contents. {t}. Some data may be lost.", .{err});
                     return;
                 };
-
-                // Seems like we run once and then exit for reasons unknown???
-                // Like we are not hitting the .selection event.
 
                 std.log.debug("got: {s}", .{data});
 
