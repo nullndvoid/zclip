@@ -79,7 +79,9 @@ pub fn deinit(self: *Mime) void {
 /// with or without UTF-8 encoding specified.
 fn isPlainText(mime_type: [:0]const u8) bool {
     for (text_types) |tt| {
-        if (std.mem.eql(u8, mime_type, tt)) return true;
+        if (std.mem.orderZ(u8, mime_type, tt) == .eq) {
+            return true;
+        }
     }
 
     return false;
@@ -87,7 +89,10 @@ fn isPlainText(mime_type: [:0]const u8) bool {
 
 pub fn append(self: *Mime, mime_type: [:0]const u8) !void {
     if (self.mime_types.items.len == self.mime_types.capacity) return error.AtCapacity;
-    if (self.mime_types.items.len >= 1 and self.got_plain_text and isPlainText(mime_type)) return;
+
+    const is_plain = isPlainText(mime_type);
+    if (self.got_plain_text and is_plain) return;
 
     self.mime_types.appendAssumeCapacity(mime_type);
+    if (is_plain) self.got_plain_text = true;
 }
