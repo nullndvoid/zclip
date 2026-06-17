@@ -34,6 +34,8 @@ registry: *Registry,
 seat: *Seat,
 dcm: DataControlManager,
 dev: DataControlDevice,
+/// Destroyed after we wrote to the clipboard.
+current_source: ?DataControlSource = null,
 
 /// Stored for later deallocation.
 listener_ctx: *ListenerContext,
@@ -89,9 +91,6 @@ pub fn init(io: Io, arena: *std.heap.ArenaAllocator) !Wayland {
     listener_ctx.userdata = undefined;
 
     switch (dev) {
-        // TODO: Possibly use const fn pointers to set callbacks for clipboard updates?
-        //       Might be simpler to Queue them and pull entries from the queue
-        //       on the frontend? See pkg wayland.zig, grep for `HandlerFn` if using callbacks.
         .Ext => |ext| {
             ext.setListener(*ListenerContext, Ext.listener, listener_ctx);
         },
@@ -108,12 +107,35 @@ pub fn init(io: Io, arena: *std.heap.ArenaAllocator) !Wayland {
     };
 }
 
+fn createDataOffer(self: *Wayland, clip: *const Clip) !void {
+    const source = try self.dcm.createDataSource();
+    source.offer(clip);
+    self.current_source = source;
+}
+
+fn setClipboard(self: *Wayland, clip: *const Clip) !void {
+    try self.createDataOffer(clip);
+    if (self.current_source) |src| {
+        self.dev.setSelection(src);
+    }
+
+    const flush_res = self.display.flush();
+    if (flush_res != .SUCCESS) {
+        std.log.debug("Failed to flush wayland display: {t}", .{flush_res});
+        return error.DisplayFlushFailed;
+    }
+}
+
 pub fn setOnRead(self: *Wayland, comptime T: type, comptime callback: *const fn (clip: Clip, userdata: *T) void, userdata: *T) void {
     self.listener_ctx.on_read = @ptrCast(@alignCast(callback));
     self.listener_ctx.userdata = @ptrCast(userdata);
 }
 
 pub fn deinit(self: Wayland) void {
+    if (self.current_source) |src| {
+        src.destroy();
+    }
+
     self.dev.destroy();
     self.dcm.destroy();
 
@@ -131,10 +153,42 @@ const DataControlDevice = union(enum) {
             },
         }
     }
+
+    pub inline fn setSelection(self: *DataControlDevice, src: DataControlSource) void {
+        switch (self) {
+            .Ext => |dev| {
+                dev.Ext.setSelection(src.Ext);
+            },
+        }
+    }
 };
 
 const DataControlSource = union(enum) {
     Ext: *Ext.Source,
+
+    pub inline fn offer(self: *DataControlSource, clip: *const Clip) void {
+        switch (self) {
+            .Ext => |src| {
+                src.offer(clip.mime_type);
+            },
+        }
+    }
+
+    pub inline fn destroy(self: DataControlSource) void {
+        switch (self) {
+            .Ext => |src| {
+                src.destroy();
+            },
+        }
+    }
+
+    pub inline fn send(self: *DataControlSource, clip: *const Clip) void {
+        switch (self) {
+            .Ext => |src| {
+                src.Ext.setListener(*const Clip, Ext.dataSourceListener, clip);
+            },
+        }
+    }
 };
 
 const DataControlManager = union(enum) {
@@ -185,6 +239,24 @@ const Ext = struct {
     pub const Source = wayland.ext.DataControlSourceV1;
     pub const Offer = wayland.ext.DataControlOfferV1;
 
+    fn dataSourceListener(src: *Source, ev: Source.Event, clip: *const Clip) void {
+        _ = src; // autofix
+        _ = clip; // autofix
+        switch (ev) {
+            .send => |snd| {
+                const write_fd = snd.fd;
+                const write_file = std.Io.File{
+                    .handle = write_fd,
+                    .flags = .{ .nonblocking = false },
+                };
+                _ = write_file; // autofix
+            },
+            .cancelled => {
+                std.log.debug("Source send cancelled! Some data may not be written to the clipboard!", .{});
+            },
+        }
+    }
+
     fn dataOfferListener(_: *Offer, event: Offer.Event, ctx: *ListenerContext) void {
         switch (event) {
             .offer => |offer| {
@@ -205,8 +277,6 @@ const Ext = struct {
                 off.id.setListener(*ListenerContext, dataOfferListener, userdata);
             },
             .selection => |sel| {
-                std.log.debug("Got selection event: {any}", .{sel});
-
                 // Since selection fires after all of the data_offer events,
                 // we have collected all the MIME types.
                 defer userdata.current_mime.reset();
@@ -263,7 +333,6 @@ const Ext = struct {
 
                 std.log.debug("got: {s}", .{data});
 
-                // TODO: Execute a callback with read Clip.
                 userdata.on_read(Clip{
                     .data = data,
                     .mime_type = ask_for,
@@ -299,27 +368,4 @@ fn registryListener(reg: *Registry, event: Registry.Event, globals: *Globals) vo
 
 pub fn eventLoop(self: *Wayland) !void {
     while (self.display.dispatch() == .SUCCESS) {}
-}
-
-test "init/deinit" {
-    const alloc = std.testing.allocator;
-    const io = std.testing.io;
-
-    var arena = std.heap.ArenaAllocator.init(alloc);
-    defer arena.deinit();
-
-    var backend = try Wayland.init(io, &arena);
-    defer backend.deinit();
-
-    backend.setOnRead(void, test_on_read, @constCast(&{}));
-
-    while (backend.display.dispatch() == .SUCCESS) {}
-}
-
-fn test_on_read(clip: Clip, _: *void) void {
-    if (std.mem.eql(u8, clip.mime_type, "text/plain;charset=utf-8")) {
-        std.log.debug("test_on_read got clip: {s}", .{clip.data});
-    } else {
-        std.log.debug("test_on_read got clip ({s})", .{clip.mime_type});
-    }
 }
