@@ -26,7 +26,7 @@ pub fn main(init: std.process.Init) !void {
     var backend = try zclip.Backend.init(io, &arena);
     defer backend.deinit();
 
+    try backend.eventLoop();
     // backend.setOnRead(void, test_on_read, @constCast(&{}));
 
-    while (backend.display.dispatch() == .SUCCESS) {}
 }

@@ -200,6 +200,8 @@ const Ext = struct {
                 off.id.setListener(*ListenerContext, dataOfferListener, userdata);
             },
             .selection => |sel| {
+                std.log.debug("Got selection event: {any}", .{sel});
+
                 // Since selection fires after all of the data_offer events,
                 // we have collected all the MIME types.
                 defer userdata.current_mime.reset();
@@ -277,6 +279,10 @@ fn registryListener(reg: *Registry, event: Registry.Event, globals: *Globals) vo
         },
         .global_remove => {},
     }
+}
+
+pub fn eventLoop(self: *Wayland) !void {
+    while (self.display.dispatch() == .SUCCESS) {}
 }
 
 test "init/deinit" {
