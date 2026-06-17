@@ -21,7 +21,7 @@ pub fn build(b: *std.Build) void {
     if (platform == .wayland) {
         const scanner = Scanner.create(b, .{});
         wayland = b.createModule(.{ .root_source_file = scanner.result });
-        scanner.addSystemProtocol("staging/ext-data-control/ext-data-control-v1.xml");
+        scanner.addCustomProtocol(b.path("protocols/ext-data-control-v1.xml"));
         scanner.addCustomProtocol(b.path("protocols/wlr-data-control-unstable-v1.xml"));
 
         scanner.generate("ext_data_control_manager_v1", 1);
@@ -38,10 +38,13 @@ pub fn build(b: *std.Build) void {
     });
 
     mod.addOptions("options", options);
+    mod.link_libc = true;
 
     if (platform == .wayland) {
         mod.addImport("wayland", wayland);
-        mod.linkSystemLibrary("wayland-client", .{});
+        mod.linkSystemLibrary("wayland-client", .{
+            .use_pkg_config = .force,
+        });
     }
 
     const exe = b.addExecutable(.{
@@ -56,9 +59,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "zclip", .module = mod },
             },
         }),
-        // Temp fix for new linker bugs.
-        .use_lld = true,
-        .use_llvm = true,
+        .use_llvm = false,
     });
 
     b.installArtifact(exe);
@@ -75,24 +76,22 @@ pub fn build(b: *std.Build) void {
 
     const mod_tests = b.addTest(.{
         .root_module = mod,
-        .use_lld = true,
-        .use_llvm = true,
         .test_runner = .{
             .mode = .simple,
             .path = b.path("test_runner.zig"),
         },
+        .use_llvm = false,
     });
 
     const run_mod_tests = b.addRunArtifact(mod_tests);
 
     const exe_tests = b.addTest(.{
         .root_module = exe.root_module,
-        .use_lld = true,
-        .use_llvm = true,
         .test_runner = .{
             .mode = .simple,
             .path = b.path("test_runner.zig"),
         },
+        .use_llvm = false,
     });
 
     const run_exe_tests = b.addRunArtifact(exe_tests);
