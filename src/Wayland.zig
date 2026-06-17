@@ -211,6 +211,12 @@ const Ext = struct {
                     return;
                 };
 
+                // The protocol requires the previous selection offer to be destroyed
+                // by the time the next `selection` event arrives. We only ever need
+                // an offer for the duration of this callback, so destroy it as soon
+                // as we're done with it rather than tracking a "previous" pointer.
+                defer offer.destroy();
+
                 const ask_for = userdata.current_mime.choose() orelse "text/plain;charset=utf-8";
 
                 var fds: [2]i32 = @splat(0);
