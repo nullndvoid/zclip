@@ -66,6 +66,9 @@ const ListenerContext = struct {
     clip_to_write: ?Clip,
     /// Destroyed after we wrote to the clipboard.
     current_source: ?DataControlSource = null,
+    /// Cleaned up on deinit. A list of pending and completed reads.
+    /// This could probably be bounded and reset once full AND on deinit.
+    pending_reads: std.ArrayList(Io.Future(void)),
 };
 
 /// This backend is heap allocated so the event loop thread works. You are responsible for calling `deinit`
@@ -104,6 +107,8 @@ pub fn init(io: Io, arena: *std.heap.ArenaAllocator) !*Wayland {
         .userdata = undefined,
         .clip_to_write = null,
         .current_source = null,
+        // TODO: Make this configurable.
+        .pending_reads = try .initCapacity(arena.allocator(), 10),
     };
 
     switch (dev) {
@@ -172,6 +177,11 @@ pub fn deinit(self: *Wayland) void {
     self.should_stop.store(true, .release);
     if (self.event_loop_future) |*future| {
         future.await(self.listener_ctx.io);
+    }
+
+    // Drain any pending reads.
+    for (self.listener_ctx.pending_reads.items) |*read| {
+        read.await(self.listener_ctx.io);
     }
 
     if (self.listener_ctx.current_source) |*src| {
@@ -368,11 +378,6 @@ const Ext = struct {
                 }
 
                 const read_fd = fds[0];
-                const file = std.Io.File{
-                    .handle = read_fd,
-                    .flags = .{ .nonblocking = false },
-                };
-                defer file.close(userdata.io);
 
                 const write_fd = fds[1];
 
@@ -387,22 +392,16 @@ const Ext = struct {
 
                 _ = std.c.close(write_fd);
 
-                var reader_buf: [pipe_buf_size]u8 = undefined;
+                const read_future = userdata.io.concurrent(
+                    readClip,
+                    .{ read_fd, userdata, ask_for, is_text },
+                ) catch unreachable;
 
-                // Now read the contents until EOF.
-                var file_rdr = file.readerStreaming(userdata.io, &reader_buf);
-                const rdr = &file_rdr.interface;
-
-                const data = rdr.allocRemaining(userdata.alloc, .unlimited) catch |err| {
-                    std.log.err("Ext.listener: couldn't allocate memory for clipboard contents. {t}. Some data may be lost.", .{err});
-                    return;
+                // If out of memory, await the first element and replace it.
+                userdata.pending_reads.appendBounded(read_future) catch {
+                    userdata.pending_reads.items[0].await(userdata.io);
+                    userdata.pending_reads.items[0] = read_future;
                 };
-
-                userdata.on_read(Clip{
-                    .data = data,
-                    .mime_type = ask_for,
-                    .is_text = is_text,
-                }, userdata.userdata);
             },
             // For now we ignore these.
             .primary_selection => {},
@@ -411,6 +410,31 @@ const Ext = struct {
                 userdata.current_mime.deinit();
             },
         }
+    }
+
+    fn readClip(read_fd: i32, userdata: *ListenerContext, ask_for: [:0]const u8, is_text: bool) void {
+        var reader_buf: [pipe_buf_size]u8 = undefined;
+
+        const file = std.Io.File{
+            .handle = read_fd,
+            .flags = .{ .nonblocking = false },
+        };
+        errdefer file.close(userdata.io);
+
+        // Now read the contents until EOF.
+        var file_rdr = file.readerStreaming(userdata.io, &reader_buf);
+        const rdr = &file_rdr.interface;
+
+        const data = rdr.allocRemaining(userdata.alloc, .unlimited) catch |err| {
+            std.log.err("Ext.listener: couldn't allocate memory for clipboard contents. {t}. Some data may be lost.", .{err});
+            return;
+        };
+
+        userdata.on_read(Clip{
+            .data = data,
+            .mime_type = ask_for,
+            .is_text = is_text,
+        }, userdata.userdata);
     }
 };
 
