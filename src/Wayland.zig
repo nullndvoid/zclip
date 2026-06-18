@@ -92,15 +92,19 @@ pub fn init(io: Io, arena: *std.heap.ArenaAllocator) !*Wayland {
 
     const dev = try dcm.getDataDevice(seat);
 
-    var listener_ctx = try arena.allocator().create(ListenerContext);
+    const listener_ctx = try arena.allocator().create(ListenerContext);
 
-    listener_ctx.alloc = arena.allocator();
-    listener_ctx.io = io;
-    listener_ctx.display = display;
-    listener_ctx.current_mime = try .init(arena.allocator(), 16);
-    listener_ctx.on_read = default_on_read;
-    listener_ctx.userdata = undefined;
-    listener_ctx.clip_to_write = null;
+    listener_ctx.* = .{
+        .alloc = arena.allocator(),
+        .io = io,
+        .display = display,
+        // TODO: Make this queue size configurable. i.e. pass a WaylandConfig struct.
+        .current_mime = try .init(arena.allocator(), 16),
+        .on_read = default_on_read,
+        .userdata = undefined,
+        .clip_to_write = null,
+        .current_source = null,
+    };
 
     switch (dev) {
         .Ext => |ext| {
