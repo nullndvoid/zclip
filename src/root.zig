@@ -19,6 +19,8 @@ const Io = std.Io;
 
 const opts = @import("options");
 
+pub const Clip = @import("Clip.zig");
+
 pub const Backend = switch (opts.platform) {
     // TODO: Select X11/Wayland at runtime.
     .wayland => @import("Wayland.zig"),
