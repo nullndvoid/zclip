@@ -63,13 +63,7 @@ const WorkerContext = struct {
     out: *CommandQueue,
     clip_queue: *ClipQueue,
     backend: *Backend,
-    /// Drained on deinit.
-    pending_writes: std.ArrayList(Io.Future(anyerror!void)),
 };
-
-fn writeClipboard(backend: *Backend, clip: Clip) anyerror!void {
-    try backend.setClipboard(clip);
-}
 
 /// Returns error.Stop if we should stop the worker without error.
 fn pollInCommands(ctx: *WorkerContext, buf: []Command) anyerror!void {
@@ -89,20 +83,7 @@ fn pollInCommands(ctx: *WorkerContext, buf: []Command) anyerror!void {
         switch (cmd) {
             .Stop => return error.Stop,
             .WriteClipboard => |clip| {
-                const task = try ctx.io.concurrent(writeClipboard, .{
-                    ctx.backend, clip,
-                });
-
-                // TODO: Write simple single threaded queues to wrap slices for
-                //       this usecase (also used in Wayland.zig).
-                ctx.pending_writes.appendBounded(task) catch {
-                    ctx.pending_writes.items[0].await(ctx.io) catch |err| {
-                        log.err("pending_writes[0] failed with error {t}", .{err});
-                        return error.ClipWriteFailed;
-                    };
-
-                    ctx.pending_writes.items[0] = task;
-                };
+                try ctx.backend.setClipboard(clip);
             },
             else => return error.InvalidCommand,
         }
@@ -203,9 +184,6 @@ pub fn init(io: Io, arena: *ArenaAllocator, config: Config) !Clipboard {
     commands_in.* = CommandQueue.init(commands_in_buf);
     commands_out.* = CommandQueue.init(commands_out_buf);
 
-    const pending_writes_buf = try arena.allocator().alloc(Io.Future(anyerror!void), config.pending_writes_buf_size);
-    const pending_writes = std.ArrayList(Io.Future(anyerror!void)).initBuffer(pending_writes_buf);
-
     const worker_ctx = try arena.allocator().create(WorkerContext);
     worker_ctx.* = .{
         .in = commands_in,
@@ -214,7 +192,6 @@ pub fn init(io: Io, arena: *ArenaAllocator, config: Config) !Clipboard {
         .io = io,
         .alloc = arena.allocator(),
         .backend = backend,
-        .pending_writes = pending_writes,
     };
 
     return .{
