@@ -154,14 +154,13 @@ pub fn setOnRead(self: *Wayland, comptime T: type, comptime callback: *const fn 
 }
 
 pub fn deinit(self: *Wayland) void {
-    if (self.listener_ctx.current_source) |src| {
-        _ = src; // autofix
-        // src.destroy();
-    }
-
     self.should_stop.store(true, .release);
     if (self.event_loop_future) |*future| {
         future.await(self.listener_ctx.io);
+    }
+
+    if (self.listener_ctx.current_source) |*src| {
+        src.destroy();
     }
 
     self.dev.destroy();
@@ -413,21 +412,46 @@ fn registryListener(reg: *Registry, event: Registry.Event, globals: *Globals) vo
     }
 }
 
-/// To be ran on another thread with Io.concurrent perhaps.
 fn eventLoop(self: *Wayland) void {
-    var res = self.display.dispatch();
-    while (res == .SUCCESS) : (res = self.display.dispatch()) {
-        const should_stop = self.should_stop.load(.acquire);
-        if (should_stop) {
-            std.log.debug("Wayland backend: got stop signal, exiting event loop!", .{});
+    const display_fd = self.display.getFd();
+    var fds = [_]std.c.pollfd{
+        .{
+            .fd = display_fd,
+            .events = std.c.POLL.IN,
+            .revents = 0,
+        },
+    };
+    const poll_timeout_ms = 200;
+
+    while (!self.should_stop.load(.acquire)) {
+        // Flush queued requests before we block.
+        const flush_res = self.display.flush();
+        if (flush_res != .SUCCESS) {
+            std.log.err("Wayland backend: could not flush display: {t}", .{flush_res});
+        }
+
+        const ret = std.c.poll(fds[0..].ptr, 1, poll_timeout_ms);
+        if (ret < 0) {
+            // We should retry on EINTR.
+            if (std.posix.errno(ret) == .INTR) continue;
+            std.log.err("Wayland backend: poll failed, stopping event loop.", .{});
             break;
         }
-    }
 
-    if (res != .SUCCESS) {
-        std.log.err(
-            "Wayland backend: event loop got non SUCCESS value: {t}. Exiting event loop!",
-            .{res},
-        );
+        // On timeout, check if we should stop.
+        if (ret == 0) continue;
+
+        if (fds[0].revents & (std.c.POLL.HUP | std.c.POLL.ERR) != 0) {
+            std.log.debug("Wayland backend: display fd closed, stopping event loop.", .{});
+            break;
+        }
+
+        if (fds[0].revents & std.c.POLL.IN != 0) {
+            const dispatch_res = self.display.dispatch();
+            if (dispatch_res != .SUCCESS) {
+                std.log.err("Wayland backend: dispatch error {t}, stopping.", .{dispatch_res});
+                break;
+            }
+        }
     }
 }
