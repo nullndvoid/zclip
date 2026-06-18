@@ -155,7 +155,8 @@ pub fn setOnRead(self: *Wayland, comptime T: type, comptime callback: *const fn 
 
 pub fn deinit(self: *Wayland) void {
     if (self.listener_ctx.current_source) |src| {
-        src.destroy();
+        _ = src; // autofix
+        // src.destroy();
     }
 
     self.should_stop.store(true, .release);
@@ -423,5 +424,10 @@ fn eventLoop(self: *Wayland) void {
         }
     }
 
-    std.log.err("Wayland backend: event loop got non SUCCESS value: {t}. Exiting event loop!", .{res});
+    if (res != .SUCCESS) {
+        std.log.err(
+            "Wayland backend: event loop got non SUCCESS value: {t}. Exiting event loop!",
+            .{res},
+        );
+    }
 }
