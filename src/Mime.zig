@@ -18,6 +18,9 @@ const Allocator = std.mem.Allocator;
 
 const Mime = @This();
 
+/// To avoid reading back our own written clipboard entries.
+pub const self_marker = "application/x-zclip-internal";
+
 /// These are the most basic plaintext types. They are all somewhat equivalent.
 /// For now I will make no assumptions of UTF-8 encoding.
 const text_types = [_][:0]const u8{
@@ -34,6 +37,11 @@ mime_types: std.ArrayList([:0]const u8) = .empty,
 /// To avoid appending plaintext types if we already have text/plain;charset=utf-8
 /// or text/plain. We only need one of these!
 got_plain_text: bool = false,
+
+/// True if this entry is from this instance of zclip. Set if the self_marker is found in a data offer.
+///
+/// Currently used by the Wayland backend, but this may be needed later.
+from_zclip: bool = false,
 
 allocator: Allocator,
 
@@ -97,6 +105,12 @@ pub fn append(self: *Mime, mime_type: [:0]const u8) !void {
 
     const is_plain = isPlainText(mime_type);
     if (self.got_plain_text and is_plain) return;
+
+    if (std.mem.order(u8, mime_type, Mime.self_marker) == .eq) {
+        self.from_zclip = true;
+
+        return;
+    }
 
     self.mime_types.appendAssumeCapacity(mime_type);
     if (is_plain) self.got_plain_text = true;

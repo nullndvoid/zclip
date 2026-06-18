@@ -132,9 +132,15 @@ pub fn init(io: Io, arena: *std.heap.ArenaAllocator) !*Wayland {
     return self;
 }
 
+/// TODO: Handle offering a range of MIME types, maybe make `Clip.mime_type` a list?
+///       Or handle this elsewhere using `listener_ctx.current_source`.
 fn createDataOffer(self: *Wayland, clip: *const Clip) !void {
     const source = try self.dcm.createDataSource();
-    source.offer(clip);
+
+    source.offer(clip.mime_type);
+    // To avoid reading back our own entries later on and deadlocking.
+    source.offer(Mime.self_marker);
+
     self.listener_ctx.current_source = source;
 }
 
@@ -204,10 +210,10 @@ const DataControlSource = union(enum) {
     Ext: *Ext.Source,
 
     /// Note this can be called as many times as clip MIME types offered.
-    pub inline fn offer(self: DataControlSource, clip: *const Clip) void {
+    pub inline fn offer(self: DataControlSource, mime_type: [:0]const u8) void {
         switch (self) {
             .Ext => |src| {
-                src.offer(clip.mime_type);
+                src.offer(mime_type);
             },
         }
     }
@@ -312,12 +318,12 @@ const Ext = struct {
         }
     }
 
+    /// TODO: Check this does not fire on primary_selection until this is implemented.
+    ///       If so we want to reset current_mime on primary_selections.
     fn dataOfferListener(_: *Offer, event: Offer.Event, ctx: *ListenerContext) void {
         switch (event) {
             .offer => |offer| {
                 const mime_type: [:0]const u8 = std.mem.span(offer.mime_type);
-
-                // std.log.debug("Got MIME type: {s}", .{mime_type});
 
                 ctx.current_mime.append(mime_type) catch |err| {
                     std.log.err("Could not append to MIME type list: {t}. Was capacity exceeded?", .{err});
@@ -335,6 +341,10 @@ const Ext = struct {
                 // Since selection fires after all of the data_offer events,
                 // we have collected all the MIME types.
                 defer userdata.current_mime.reset();
+
+                // To avoid deadlocks when we end up reading and writing a pipe in the same process.
+                // It is also quite unneccessary to read back what we wrote in any case.
+                if (userdata.current_mime.from_zclip) return;
 
                 const offer = sel.id orelse {
                     std.log.debug("Got null data control offer. Returning.", .{});
