@@ -34,11 +34,12 @@ registry: *Registry,
 seat: *Seat,
 dcm: DataControlManager,
 dev: DataControlDevice,
-/// Destroyed after we wrote to the clipboard.
-current_source: ?DataControlSource = null,
 
 /// Stored for later deallocation.
 listener_ctx: *ListenerContext,
+
+/// Should stop, set when event loop should stop, atomic bool.
+should_stop: std.atomic.Value(bool) = .{ .raw = false },
 
 /// Stub function, to be overwritten by caller after `.init`.
 fn default_on_read(_: Clip, _: *anyopaque) void {}
@@ -55,9 +56,13 @@ const ListenerContext = struct {
     display: *Display,
     current_mime: Mime,
     /// A callback ran on read.
-    on_read: *const fn (clip: Clip, userdata: *anyopaque) void = default_on_read,
+    on_read: *const fn (clip: Clip, userdata: *anyopaque) void,
     /// Passed into `on_read`.
     userdata: *anyopaque,
+    /// Nulled on `.cancelled` event.
+    clip_to_write: ?*const Clip,
+    /// Destroyed after we wrote to the clipboard.
+    current_source: ?DataControlSource = null,
 };
 
 pub fn init(io: Io, arena: *std.heap.ArenaAllocator) !Wayland {
@@ -83,12 +88,14 @@ pub fn init(io: Io, arena: *std.heap.ArenaAllocator) !Wayland {
     const dev = try dcm.getDataDevice(seat);
 
     var listener_ctx = try arena.allocator().create(ListenerContext);
+
     listener_ctx.alloc = arena.allocator();
     listener_ctx.io = io;
     listener_ctx.display = display;
     listener_ctx.current_mime = try .init(arena.allocator(), 16);
     listener_ctx.on_read = default_on_read;
     listener_ctx.userdata = undefined;
+    listener_ctx.clip_to_write = null;
 
     switch (dev) {
         .Ext => |ext| {
@@ -110,13 +117,14 @@ pub fn init(io: Io, arena: *std.heap.ArenaAllocator) !Wayland {
 fn createDataOffer(self: *Wayland, clip: *const Clip) !void {
     const source = try self.dcm.createDataSource();
     source.offer(clip);
-    self.current_source = source;
+    self.listener_ctx.current_source = source;
 }
 
 fn setClipboard(self: *Wayland, clip: *const Clip) !void {
     try self.createDataOffer(clip);
-    if (self.current_source) |src| {
+    if (self.listener_ctx.current_source) |src| {
         self.dev.setSelection(src);
+        self.listener_ctx.clip_to_write = clip;
     }
 
     const flush_res = self.display.flush();
@@ -132,7 +140,7 @@ pub fn setOnRead(self: *Wayland, comptime T: type, comptime callback: *const fn 
 }
 
 pub fn deinit(self: Wayland) void {
-    if (self.current_source) |src| {
+    if (self.listener_ctx.current_source) |src| {
         src.destroy();
     }
 
@@ -166,6 +174,7 @@ const DataControlDevice = union(enum) {
 const DataControlSource = union(enum) {
     Ext: *Ext.Source,
 
+    /// Note this can be called as many times as clip MIME types offered.
     pub inline fn offer(self: *DataControlSource, clip: *const Clip) void {
         switch (self) {
             .Ext => |src| {
@@ -239,20 +248,38 @@ const Ext = struct {
     pub const Source = wayland.ext.DataControlSourceV1;
     pub const Offer = wayland.ext.DataControlOfferV1;
 
-    fn dataSourceListener(src: *Source, ev: Source.Event, clip: *const Clip) void {
-        _ = src; // autofix
-        _ = clip; // autofix
+    fn dataSourceListener(_: *Source, ev: Source.Event, ctx: *ListenerContext) void {
         switch (ev) {
             .send => |snd| {
+                if (ctx.clip_to_write == null) {
+                    std.log.err("Tried to send clip but it was null!", .{});
+                    return;
+                }
+
+                const clip = ctx.clip_to_write.?;
+
                 const write_fd = snd.fd;
                 const write_file = std.Io.File{
                     .handle = write_fd,
                     .flags = .{ .nonblocking = false },
                 };
-                _ = write_file; // autofix
+                defer write_file.close(ctx.io);
+
+                write_file.writeStreamingAll(ctx.io, clip.data) catch |err| {
+                    std.log.err(
+                        "Failed writing {d} bytes to clipboard. Reason: {t}",
+                        .{ clip.data.len, err },
+                    );
+
+                    return;
+                };
             },
             .cancelled => {
-                std.log.debug("Source send cancelled! Some data may not be written to the clipboard!", .{});
+                if (ctx.current_source) |src| {
+                    src.destroy();
+                }
+                ctx.current_source = null;
+                
             },
         }
     }
