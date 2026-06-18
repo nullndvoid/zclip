@@ -369,6 +369,14 @@ const Ext = struct {
                 if (userdata.current_mime.from_zclip) return;
 
                 const ask_for = userdata.current_mime.choose() orelse "text/plain;charset=utf-8";
+                const ask_for_copy = userdata.alloc.dupeSentinel(u8, ask_for, 0) catch {
+                    std.log.err(
+                        "Wayland backend: could not dupe current_mime in selection listener. Returning!",
+                        .{},
+                    );
+
+                    return;
+                };
                 const is_text = Mime.isPlainText(ask_for);
 
                 var fds: [2]i32 = @splat(0);
@@ -394,7 +402,7 @@ const Ext = struct {
 
                 const read_future = userdata.io.concurrent(
                     readClip,
-                    .{ read_fd, userdata, ask_for, is_text },
+                    .{ read_fd, userdata, ask_for_copy, is_text },
                 ) catch unreachable;
 
                 // If out of memory, await the first element and replace it.
