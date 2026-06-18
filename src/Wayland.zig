@@ -138,7 +138,11 @@ fn createDataOffer(self: *Wayland, clip: *const Clip) !void {
     self.listener_ctx.current_source = source;
 }
 
-fn setClipboard(self: *Wayland, clip: *const Clip) !void {
+/// TODO: If an input MIME type is specific but not text, offer it multiple times as
+///       e.g. text/html, text/plain;charset=utf-8.
+///
+///       This could mean building a list of MIME types to offer for a given input.
+pub fn setClipboard(self: *Wayland, clip: *const Clip) !void {
     try self.createDataOffer(clip);
     if (self.listener_ctx.current_source) |src| {
         self.dev.setSelection(src);
@@ -170,6 +174,8 @@ pub fn deinit(self: *Wayland) void {
     self.dev.destroy();
     self.dcm.destroy();
 
+    self.seat.destroy();
+
     self.registry.destroy();
     self.display.disconnect();
 }
@@ -185,10 +191,10 @@ const DataControlDevice = union(enum) {
         }
     }
 
-    pub inline fn setSelection(self: *DataControlDevice, src: DataControlSource) void {
+    pub inline fn setSelection(self: DataControlDevice, src: DataControlSource) void {
         switch (self) {
             .Ext => |dev| {
-                dev.Ext.setSelection(src.Ext);
+                dev.setSelection(src.Ext);
             },
         }
     }
@@ -198,7 +204,7 @@ const DataControlSource = union(enum) {
     Ext: *Ext.Source,
 
     /// Note this can be called as many times as clip MIME types offered.
-    pub inline fn offer(self: *DataControlSource, clip: *const Clip) void {
+    pub inline fn offer(self: DataControlSource, clip: *const Clip) void {
         switch (self) {
             .Ext => |src| {
                 src.offer(clip.mime_type);
@@ -302,7 +308,6 @@ const Ext = struct {
                     src.destroy();
                 }
                 ctx.current_source = null;
-                
             },
         }
     }
@@ -343,6 +348,7 @@ const Ext = struct {
                 defer offer.destroy();
 
                 const ask_for = userdata.current_mime.choose() orelse "text/plain;charset=utf-8";
+                const is_text = Mime.isPlainText(ask_for);
 
                 var fds: [2]i32 = @splat(0);
                 if (std.c.pipe(&fds) == -1) {
@@ -381,11 +387,10 @@ const Ext = struct {
                     return;
                 };
 
-                std.log.debug("got: {s}", .{data});
-
                 userdata.on_read(Clip{
                     .data = data,
                     .mime_type = ask_for,
+                    .is_text = is_text,
                 }, userdata.userdata);
             },
             // For now we ignore these.
