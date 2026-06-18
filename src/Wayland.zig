@@ -151,10 +151,17 @@ fn createDataOffer(self: *Wayland, clip: Clip) !void {
 ///
 ///       This could mean building a list of MIME types to offer for a given input.
 pub fn setClipboard(self: *Wayland, clip: Clip) !void {
+    const clip_data = try self.arena.allocator().dupe(u8, clip.data);
+    const clip_copy = Clip{
+        .data = clip_data,
+        .is_text = clip.is_text,
+        .mime_type = clip.mime_type,
+    };
+
     try self.createDataOffer(clip);
     if (self.listener_ctx.current_source) |src| {
         self.dev.setSelection(src);
-        self.listener_ctx.clip_to_write = clip;
+        self.listener_ctx.clip_to_write = clip_copy;
         src.send(self.listener_ctx);
     }
 
