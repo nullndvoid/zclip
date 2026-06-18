@@ -16,17 +16,7 @@ const Io = std.Io;
 
 const zclip = @import("zclip");
 const Clip = zclip.Clip;
-
-fn onRead(clip: Clip, _: *void) void {
-    if (clip.is_text) {
-        std.log.info("onRead got clipping: {s}", .{clip.data});
-    } else {
-        std.log.info(
-            "onRead got clipping (MIME type = {s}) (length is {d})",
-            .{ clip.mime_type, clip.data.len },
-        );
-    }
-}
+const Clipboard = zclip.Clipboard;
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
@@ -35,24 +25,8 @@ pub fn main(init: std.process.Init) !void {
     var arena = std.heap.ArenaAllocator.init(alloc);
     defer arena.deinit();
 
-    var backend = try zclip.Backend.init(io, &arena);
+    var clipboard = try Clipboard.init(io, &arena);
+    defer clipboard.deinit();
 
-    backend.setOnRead(void, onRead, @constCast(&{}));
-
-    // For testing purposes, let's sleep for a bit, write to clipboard, and exit.
-    try io.sleep(.fromMilliseconds(500), .real);
-
-    const clip = Clip{
-        .data = "Hello, world!",
-        .is_text = true,
-        .mime_type = "text/plain;charset=utf-8",
-    };
-
-    try backend.setClipboard(clip);
-
-    // See if we read back our own clipping. If so, we want to write some internal
-    // MIME type to allow us to ignore our own writes.
     try io.sleep(.fromSeconds(5), .real);
-
-    defer backend.deinit();
 }
