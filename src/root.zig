@@ -20,11 +20,40 @@ const Io = std.Io;
 const opts = @import("options");
 
 pub const Clip = @import("Clip.zig");
+pub const Clipboard = @import("Clipboard.zig");
 
 pub const Backend = switch (opts.platform) {
     // TODO: Select X11/Wayland at runtime.
     .wayland => @import("Wayland.zig"),
     .windows => @import("Windows.zig"),
+};
+
+/// Lives as long as the Clipboard does, created by Clipboard and passed into Backend?
+pub const ClipQueue = struct {
+    io: Io,
+    queue: Io.Queue(Clip),
+    queue_buf: []Clip,
+
+    pub const Config = struct {
+        /// We don't expect much lag between reads and writes.
+        buffer_size: usize = 5,
+    };
+
+    pub fn init(io: Io, gpa: std.mem.Allocator, config: ClipQueue.Config) !ClipQueue {
+        const queue_buf = try gpa.alloc(Clip, config.buffer_size);
+        const queue = Io.Queue(Clip).init(queue_buf);
+
+        return .{
+            .io = io,
+            .queue = queue,
+            .queue_buf = queue_buf,
+        };
+    }
+
+    pub fn deinit(self: *ClipQueue, gpa: std.mem.Allocator) void {
+        self.queue.close(self.io);
+        gpa.free(self.queue_buf);
+    }
 };
 
 test {
