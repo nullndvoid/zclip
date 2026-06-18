@@ -41,6 +41,9 @@ listener_ctx: *ListenerContext,
 /// Should stop, set when event loop should stop, atomic bool.
 should_stop: std.atomic.Value(bool) = .{ .raw = false },
 
+/// Awaited upon stop signal. Returns nothing but logs errors if needed.
+event_loop_future: ?std.Io.Future(void) = null,
+
 /// Stub function, to be overwritten by caller after `.init`.
 fn default_on_read(_: Clip, _: *anyopaque) void {}
 
@@ -65,7 +68,9 @@ const ListenerContext = struct {
     current_source: ?DataControlSource = null,
 };
 
-pub fn init(io: Io, arena: *std.heap.ArenaAllocator) !Wayland {
+/// This backend is heap allocated so the event loop thread works. You are responsible for calling `deinit`
+/// on this (before you deinit the arena).
+pub fn init(io: Io, arena: *std.heap.ArenaAllocator) !*Wayland {
     const display = try Display.connect(null);
     var reg = try display.getRegistry();
     var globals = Globals{};
@@ -103,7 +108,10 @@ pub fn init(io: Io, arena: *std.heap.ArenaAllocator) !Wayland {
         },
     }
 
-    return .{
+    // Annoyingly we need to heap allocate ourselves to call eventLoop lol.
+    var self = try arena.allocator().create(Wayland);
+
+    self.* = .{
         .arena = arena,
         .display = display,
         .registry = reg,
@@ -111,7 +119,13 @@ pub fn init(io: Io, arena: *std.heap.ArenaAllocator) !Wayland {
         .dcm = dcm,
         .dev = dev,
         .listener_ctx = listener_ctx,
+        .should_stop = .{ .raw = false },
     };
+
+    // Now we can await this after setting the stop signal.
+    self.event_loop_future = try self.listener_ctx.io.concurrent(Wayland.eventLoop, .{self});
+
+    return self;
 }
 
 fn createDataOffer(self: *Wayland, clip: *const Clip) !void {
@@ -139,9 +153,14 @@ pub fn setOnRead(self: *Wayland, comptime T: type, comptime callback: *const fn 
     self.listener_ctx.userdata = @ptrCast(userdata);
 }
 
-pub fn deinit(self: Wayland) void {
+pub fn deinit(self: *Wayland) void {
     if (self.listener_ctx.current_source) |src| {
         src.destroy();
+    }
+
+    self.should_stop.store(true, .release);
+    if (self.event_loop_future) |*future| {
+        future.await(self.listener_ctx.io);
     }
 
     self.dev.destroy();
@@ -393,6 +412,16 @@ fn registryListener(reg: *Registry, event: Registry.Event, globals: *Globals) vo
     }
 }
 
-pub fn eventLoop(self: *Wayland) !void {
-    while (self.display.dispatch() == .SUCCESS) {}
+/// To be ran on another thread with Io.concurrent perhaps.
+fn eventLoop(self: *Wayland) void {
+    var res = self.display.dispatch();
+    while (res == .SUCCESS) : (res = self.display.dispatch()) {
+        const should_stop = self.should_stop.load(.acquire);
+        if (should_stop) {
+            std.log.debug("Wayland backend: got stop signal, exiting event loop!", .{});
+            break;
+        }
+    }
+
+    std.log.err("Wayland backend: event loop got non SUCCESS value: {t}. Exiting event loop!", .{res});
 }
