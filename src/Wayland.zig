@@ -180,6 +180,8 @@ pub fn deinit(self: *Wayland) void {
         src.destroy();
     }
 
+    self.listener_ctx.clip_queue.deinit(self.arena.allocator());
+
     self.dev.destroy();
     self.dcm.destroy();
 
