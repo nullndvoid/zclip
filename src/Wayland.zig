@@ -23,9 +23,12 @@ const Registry = wl.Registry;
 const Seat = wl.Seat;
 
 const Clip = @import("Clip.zig");
+const ClipQueue = @import("root.zig").ClipQueue;
 const Mime = @import("Mime.zig");
 
 const Wayland = @This();
+
+const log = std.log.scoped(.WaylandBackend);
 
 arena: *std.heap.ArenaAllocator,
 
@@ -44,9 +47,6 @@ should_stop: std.atomic.Value(bool) = .{ .raw = false },
 /// Awaited upon stop signal. Returns nothing but logs errors if needed.
 event_loop_future: ?std.Io.Future(void) = null,
 
-/// Stub function, to be overwritten by caller after `.init`.
-fn default_on_read(_: Clip, _: *anyopaque) void {}
-
 /// Passed into `DataControlDevice` listeners.
 const ListenerContext = struct {
     /// This is actually wrapped in an `ArenaAllocator` in `init`.
@@ -58,10 +58,6 @@ const ListenerContext = struct {
     /// the compositor mid-callback, before we block reading the pipe.
     display: *Display,
     current_mime: Mime,
-    /// A callback ran on read.
-    on_read: *const fn (clip: Clip, userdata: *anyopaque) void,
-    /// Passed into `on_read`.
-    userdata: *anyopaque,
     /// Nulled on `.cancelled` event.
     clip_to_write: ?Clip,
     /// Destroyed after we wrote to the clipboard.
@@ -69,11 +65,13 @@ const ListenerContext = struct {
     /// Cleaned up on deinit. A list of pending and completed reads.
     /// This could probably be bounded and reset once full AND on deinit.
     pending_reads: std.ArrayList(Io.Future(void)),
+    /// Passed in from `Clipboard`. Written to when the system sees new entries.
+    clip_queue: *ClipQueue,
 };
 
 /// This backend is heap allocated so the event loop thread works. You are responsible for calling `deinit`
 /// on this (before you deinit the arena).
-pub fn init(io: Io, arena: *std.heap.ArenaAllocator) !*Wayland {
+pub fn init(io: Io, arena: *std.heap.ArenaAllocator, clip_queue: *ClipQueue) !*Wayland {
     const display = try Display.connect(null);
     var reg = try display.getRegistry();
     var globals = Globals{};
@@ -103,12 +101,11 @@ pub fn init(io: Io, arena: *std.heap.ArenaAllocator) !*Wayland {
         .display = display,
         // TODO: Make this queue size configurable. i.e. pass a WaylandConfig struct.
         .current_mime = try .init(arena.allocator(), 16),
-        .on_read = default_on_read,
-        .userdata = undefined,
         .clip_to_write = null,
         .current_source = null,
         // TODO: Make this configurable.
         .pending_reads = try .initCapacity(arena.allocator(), 10),
+        .clip_queue = clip_queue,
     };
 
     switch (dev) {
@@ -163,14 +160,9 @@ pub fn setClipboard(self: *Wayland, clip: Clip) !void {
 
     const flush_res = self.display.flush();
     if (flush_res != .SUCCESS) {
-        std.log.debug("Failed to flush wayland display: {t}", .{flush_res});
+        log.debug("Failed to flush wayland display: {t}", .{flush_res});
         return error.DisplayFlushFailed;
     }
-}
-
-pub fn setOnRead(self: *Wayland, comptime T: type, comptime callback: *const fn (clip: Clip, userdata: *T) void, userdata: *T) void {
-    self.listener_ctx.on_read = @ptrCast(@alignCast(callback));
-    self.listener_ctx.userdata = @ptrCast(userdata);
 }
 
 pub fn deinit(self: *Wayland) void {
@@ -298,7 +290,7 @@ const Ext = struct {
         switch (ev) {
             .send => |snd| {
                 if (ctx.clip_to_write == null) {
-                    std.log.err("Tried to send clip but it was null!", .{});
+                    log.err("Tried to send clip but it was null!", .{});
                     return;
                 }
 
@@ -312,7 +304,7 @@ const Ext = struct {
                 defer write_file.close(ctx.io);
 
                 write_file.writeStreamingAll(ctx.io, clip.data) catch |err| {
-                    std.log.err(
+                    log.err(
                         "Failed writing {d} bytes to clipboard. Reason: {t}",
                         .{ clip.data.len, err },
                     );
@@ -337,7 +329,7 @@ const Ext = struct {
                 const mime_type: [:0]const u8 = std.mem.span(offer.mime_type);
 
                 ctx.current_mime.append(mime_type) catch |err| {
-                    std.log.err("Could not append to MIME type list: {t}. Was capacity exceeded?", .{err});
+                    log.err("Could not append to MIME type list: {t}. Was capacity exceeded?", .{err});
                 };
             },
         }
@@ -354,7 +346,7 @@ const Ext = struct {
                 defer userdata.current_mime.reset();
 
                 const offer = sel.id orelse {
-                    std.log.debug("Got null data control offer. Returning.", .{});
+                    log.debug("Got null data control offer. Returning.", .{});
                     return;
                 };
 
@@ -370,8 +362,8 @@ const Ext = struct {
 
                 const ask_for = userdata.current_mime.choose() orelse "text/plain;charset=utf-8";
                 const ask_for_copy = userdata.alloc.dupeSentinel(u8, ask_for, 0) catch {
-                    std.log.err(
-                        "Wayland backend: could not dupe current_mime in selection listener. Returning!",
+                    log.err(
+                        "could not dupe current_mime in selection listener. Returning!",
                         .{},
                     );
 
@@ -381,7 +373,7 @@ const Ext = struct {
 
                 var fds: [2]i32 = @splat(0);
                 if (std.c.pipe(&fds) == -1) {
-                    std.log.err("Ext.listener failed to create pipe. Some data may be lost.", .{});
+                    log.err("Ext.listener failed to create pipe. Some data may be lost.", .{});
                     return;
                 }
 
@@ -393,7 +385,7 @@ const Ext = struct {
 
                 const flush_ret = userdata.display.flush();
                 if (flush_ret != .SUCCESS) {
-                    std.log.err("Ext.listener failed to flush receive request: {t}. Some data may be lost.", .{flush_ret});
+                    log.err("Ext.listener failed to flush receive request: {t}. Some data may be lost.", .{flush_ret});
                     _ = std.c.close(write_fd);
                     return;
                 }
@@ -434,15 +426,22 @@ const Ext = struct {
         const rdr = &file_rdr.interface;
 
         const data = rdr.allocRemaining(userdata.alloc, .unlimited) catch |err| {
-            std.log.err("Ext.listener: couldn't allocate memory for clipboard contents. {t}. Some data may be lost.", .{err});
+            log.err("Ext.listener: couldn't allocate memory for clipboard contents. {t}. Some data may be lost.", .{err});
             return;
         };
 
-        userdata.on_read(Clip{
+        userdata.clip_queue.queue.putOne(userdata.io, .{
             .data = data,
             .mime_type = ask_for,
             .is_text = is_text,
-        }, userdata.userdata);
+        }) catch |err| switch (err) {
+            error.Canceled => {
+                log.debug("task cancelled whilst writing clip to queue. Some data will be lost.", .{});
+            },
+            error.Closed => {
+                log.info("clip queue was closed. Some data will be lost.", .{});
+            },
+        };
     }
 };
 
@@ -458,7 +457,7 @@ fn registryListener(reg: *Registry, event: Registry.Event, globals: *Globals) vo
                 globals.seat = reg.bind(ev.name, Seat, 1) catch return;
             } else return;
 
-            std.log.debug("Compositor gave us global {s}", .{ev.interface});
+            log.debug("Compositor gave us global {s}", .{ev.interface});
         },
         .global_remove => {},
     }
@@ -479,14 +478,14 @@ fn eventLoop(self: *Wayland) void {
         // Flush queued requests before we block.
         const flush_res = self.display.flush();
         if (flush_res != .SUCCESS) {
-            std.log.err("Wayland backend: could not flush display: {t}", .{flush_res});
+            log.err("could not flush display: {t}", .{flush_res});
         }
 
         const ret = std.c.poll(fds[0..].ptr, 1, poll_timeout_ms);
         if (ret < 0) {
             // We should retry on EINTR.
             if (std.posix.errno(ret) == .INTR) continue;
-            std.log.err("Wayland backend: poll failed, stopping event loop.", .{});
+            log.err("poll failed, stopping event loop.", .{});
             break;
         }
 
@@ -494,14 +493,14 @@ fn eventLoop(self: *Wayland) void {
         if (ret == 0) continue;
 
         if (fds[0].revents & (std.c.POLL.HUP | std.c.POLL.ERR) != 0) {
-            std.log.debug("Wayland backend: display fd closed, stopping event loop.", .{});
+            log.debug("display fd closed, stopping event loop.", .{});
             break;
         }
 
         if (fds[0].revents & std.c.POLL.IN != 0) {
             const dispatch_res = self.display.dispatch();
             if (dispatch_res != .SUCCESS) {
-                std.log.err("Wayland backend: dispatch error {t}, stopping.", .{dispatch_res});
+                log.err("dispatch error {t}, stopping.", .{dispatch_res});
                 break;
             }
         }
