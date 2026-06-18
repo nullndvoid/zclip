@@ -77,7 +77,12 @@ pub fn deinit(self: *Mime) void {
 
 /// Used to deduplicate useless other MIME types if they are referring to text/plain,
 /// with or without UTF-8 encoding specified.
-fn isPlainText(mime_type: [:0]const u8) bool {
+///
+/// Returns true if the `mime_type` matches a known plaintext type.
+///
+/// TODO: Make a proper helper for use when setting Clip.is_text, because HTML is plain text,
+///       as is application/json etc.
+pub fn isPlainText(mime_type: [:0]const u8) bool {
     for (text_types) |tt| {
         if (std.mem.orderZ(u8, mime_type, tt) == .eq) {
             return true;
