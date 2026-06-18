@@ -18,6 +18,8 @@ const Allocator = std.mem.Allocator;
 
 const Mime = @This();
 
+const log = std.log.scoped(.MIME);
+
 /// To avoid reading back our own written clipboard entries.
 pub const self_marker = "application/x-zclip-internal";
 
@@ -72,7 +74,7 @@ pub fn reset(self: *Mime) void {
 /// For simplicity we make a list of MIME types and select from these.
 pub fn choose(self: *const Mime) ?[:0]const u8 {
     for (self.mime_types.items) |it| {
-        std.log.debug("In list: {s}", .{it});
+        log.debug("In list: {s}", .{it});
     }
 
     // This should not be invalidated since choose is called after building the list.
