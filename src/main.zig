@@ -59,7 +59,7 @@ fn parseCommand(input: []const u8) Command {
         return .Stop;
     }
 
-    return .{ .Clip = .{
+    return .{ .WriteClipboard = .{
         .data = line,
         .is_text = true,
         .mime_type = "text/plain;charset=utf-8",
