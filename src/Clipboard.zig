@@ -35,7 +35,7 @@ worker: Io.Future(anyerror!void),
 
 io: Io,
 
-const Command = union(enum) {
+pub const Command = union(enum) {
     /// Client requests the thread to stop.
     ///
     /// We are not likely to need a large buffer for `commands_in`.
@@ -239,6 +239,11 @@ pub fn deinit(self: *Clipboard) void {
     };
 
     self.backend.deinit();
+}
+
+/// Intended for use by unit tests etc. Blocking.
+pub fn sendCommandRaw(self: *Clipboard, cmd: Command) !void {
+    try self.commands_in.putOne(self.io, cmd);
 }
 
 pub const Config = struct {

@@ -17,6 +17,7 @@ const Io = std.Io;
 const zclip = @import("zclip");
 const Clip = zclip.Clip;
 const Clipboard = zclip.Clipboard;
+const Command = Clipboard.Command;
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
@@ -25,8 +26,42 @@ pub fn main(init: std.process.Init) !void {
     var arena = std.heap.ArenaAllocator.init(alloc);
     defer arena.deinit();
 
-    var clipboard = try Clipboard.init(io, &arena);
+    var clipboard = try Clipboard.init(io, &arena, .{});
     defer clipboard.deinit();
 
-    try io.sleep(.fromSeconds(5), .real);
+    const stdin = Io.File.stdin();
+    defer stdin.close(io);
+
+    var stdin_buf: [512]u8 = undefined;
+    var stdin_file_rdr = stdin.reader(io, &stdin_buf);
+    const rdr = &stdin_file_rdr.interface;
+    var line: ?[]u8 = try rdr.takeDelimiter('\n');
+
+    while (line != null) {
+        const cmd = parseCommand(line.?);
+
+        std.log.debug("Got command: {t}", .{cmd});
+
+        try clipboard.sendCommandRaw(cmd);
+
+        if (cmd == .Stop) {
+            break;
+        }
+
+        line = try rdr.takeDelimiter('\n');
+    }
+}
+
+fn parseCommand(input: []const u8) Command {
+    const line = std.mem.trim(u8, input, " \t\r");
+
+    if (std.mem.eql(u8, line, "stop")) {
+        return .Stop;
+    }
+
+    return .{ .Clip = .{
+        .data = line,
+        .is_text = true,
+        .mime_type = "text/plain;charset=utf-8",
+    } };
 }
