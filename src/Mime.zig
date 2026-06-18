@@ -56,6 +56,7 @@ pub fn init(alloc: Allocator, max_capacity: usize) !Mime {
 pub fn reset(self: *Mime) void {
     self.mime_types.clearRetainingCapacity();
     self.got_plain_text = false;
+    self.from_zclip = false;
 }
 
 /// We get a list of MIME types from the compositor. We want to prefer text,
