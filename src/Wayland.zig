@@ -148,11 +148,15 @@ fn createDataOffer(self: *Wayland, clip: *const Clip) !void {
 ///       e.g. text/html, text/plain;charset=utf-8.
 ///
 ///       This could mean building a list of MIME types to offer for a given input.
-pub fn setClipboard(self: *Wayland, clip: *const Clip) !void {
-    try self.createDataOffer(clip);
+pub fn setClipboard(self: *Wayland, clip: Clip) !void {
+    const clip_copy = try self.arena.allocator().create(Clip);
+    clip_copy.* = clip;
+
+    try self.createDataOffer(clip_copy);
     if (self.listener_ctx.current_source) |src| {
         self.dev.setSelection(src);
-        self.listener_ctx.clip_to_write = clip;
+        self.listener_ctx.clip_to_write = clip_copy;
+        src.send(self.listener_ctx);
     }
 
     const flush_res = self.display.flush();
@@ -226,10 +230,10 @@ const DataControlSource = union(enum) {
         }
     }
 
-    pub inline fn send(self: *DataControlSource, clip: *const Clip) void {
+    pub inline fn send(self: DataControlSource, ctx: *ListenerContext) void {
         switch (self) {
             .Ext => |src| {
-                src.Ext.setListener(*const Clip, Ext.dataSourceListener, clip);
+                src.setListener(*ListenerContext, Ext.dataSourceListener, ctx);
             },
         }
     }
@@ -342,10 +346,6 @@ const Ext = struct {
                 // we have collected all the MIME types.
                 defer userdata.current_mime.reset();
 
-                // To avoid deadlocks when we end up reading and writing a pipe in the same process.
-                // It is also quite unneccessary to read back what we wrote in any case.
-                if (userdata.current_mime.from_zclip) return;
-
                 const offer = sel.id orelse {
                     std.log.debug("Got null data control offer. Returning.", .{});
                     return;
@@ -356,6 +356,10 @@ const Ext = struct {
                 // an offer for the duration of this callback, so destroy it as soon
                 // as we're done with it rather than tracking a "previous" pointer.
                 defer offer.destroy();
+
+                // To avoid deadlocks when we end up reading and writing a pipe in the same process.
+                // It is also quite unneccessary to read back what we wrote in any case.
+                if (userdata.current_mime.from_zclip) return;
 
                 const ask_for = userdata.current_mime.choose() orelse "text/plain;charset=utf-8";
                 const is_text = Mime.isPlainText(ask_for);
