@@ -63,7 +63,7 @@ const ListenerContext = struct {
     /// Passed into `on_read`.
     userdata: *anyopaque,
     /// Nulled on `.cancelled` event.
-    clip_to_write: ?*const Clip,
+    clip_to_write: ?Clip,
     /// Destroyed after we wrote to the clipboard.
     current_source: ?DataControlSource = null,
 };
@@ -134,7 +134,7 @@ pub fn init(io: Io, arena: *std.heap.ArenaAllocator) !*Wayland {
 
 /// TODO: Handle offering a range of MIME types, maybe make `Clip.mime_type` a list?
 ///       Or handle this elsewhere using `listener_ctx.current_source`.
-fn createDataOffer(self: *Wayland, clip: *const Clip) !void {
+fn createDataOffer(self: *Wayland, clip: Clip) !void {
     const source = try self.dcm.createDataSource();
 
     source.offer(clip.mime_type);
@@ -149,13 +149,10 @@ fn createDataOffer(self: *Wayland, clip: *const Clip) !void {
 ///
 ///       This could mean building a list of MIME types to offer for a given input.
 pub fn setClipboard(self: *Wayland, clip: Clip) !void {
-    const clip_copy = try self.arena.allocator().create(Clip);
-    clip_copy.* = clip;
-
-    try self.createDataOffer(clip_copy);
+    try self.createDataOffer(clip);
     if (self.listener_ctx.current_source) |src| {
         self.dev.setSelection(src);
-        self.listener_ctx.clip_to_write = clip_copy;
+        self.listener_ctx.clip_to_write = clip;
         src.send(self.listener_ctx);
     }
 
