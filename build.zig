@@ -42,7 +42,7 @@ pub fn build(b: *std.Build) void {
     exe_options.addOption(?[]const u8, "git_rev", git_rev);
 
     const mod = b.addModule("zclip", .{
-        .root_source_file = b.path("src/root.zig"),
+        .root_source_file = b.path("lib/root.zig"),
         .target = target,
     });
 

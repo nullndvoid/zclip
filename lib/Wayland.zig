@@ -439,7 +439,7 @@ const Ext = struct {
             return;
         };
 
-        userdata.clip_queue.queue.putOne(userdata.io, .{
+        userdata.clip_queue.queue.putOneUncancelable(userdata.io, .{
             .data = data,
             .mime_type = ask_for,
             .is_text = is_text,
