@@ -50,6 +50,11 @@ pub const ClipQueue = struct {
         };
     }
 
+    /// Close the queue so we can retrieve elements. Idempotent.
+    pub fn close(self: *ClipQueue) void {
+        self.queue.close(self.io);
+    }
+
     pub fn deinit(self: *ClipQueue, gpa: std.mem.Allocator) void {
         self.queue.close(self.io);
         gpa.free(self.queue_buf);
