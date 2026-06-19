@@ -65,7 +65,6 @@ pub fn main(init: std.process.Init) !void {
 fn setupAndParseArgs(io: Io, alloc: Allocator, args: std.process.Args) !void {
     var stderr_buf: [1024]u8 = undefined;
     var stderr_file = Io.File.stderr();
-    defer stderr_file.close(io);
 
     var file_writer = stderr_file.writer(io, &stderr_buf);
     var writer = &file_writer.interface;
