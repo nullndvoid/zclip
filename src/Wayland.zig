@@ -515,3 +515,118 @@ fn eventLoop(self: *Wayland) void {
         }
     }
 }
+
+/// Reads from the system clipboard with wl-paste. Useful for unit testing.
+/// Caller should free Clip.data.
+fn readClipboardWlPaste(io: Io, alloc: Allocator) !Clip {
+    var child = try std.process.spawn(io, .{
+        .argv = &[_][]const u8{
+            "wl-paste",
+            "--no-newline",
+        },
+        .cwd = .inherit,
+        .stdout = .pipe,
+    });
+
+    var stdout = child.stdout.?;
+    var buf: [1024]u8 = undefined;
+    var stdout_reader = stdout.readerStreaming(io, &buf);
+    var rdr = &stdout_reader.interface;
+
+    const data = try rdr.allocRemaining(alloc, .unlimited);
+
+    const term = try child.wait(io);
+
+    if (term.exited != 0) return error.WlPasteFailed;
+
+    // For now just assume we have text.
+    return Clip{
+        .data = data,
+        .is_text = true,
+        .mime_type = "text/plain;charset=utf-8",
+    };
+}
+
+/// Writes to the system clipboard with wl-copy. Useful for unit testing.
+fn writeClipboardWlCopy(io: Io, clip: Clip) !void {
+    var child = try std.process.spawn(io, .{
+        .argv = &[_][]const u8{
+            "wl-copy",
+            "--type",
+            clip.mime_type,
+        },
+        .cwd = .inherit,
+        .stdin = .pipe,
+    });
+
+    var stdin = child.stdin.?;
+    try stdin.writeStreamingAll(io, clip.data);
+
+    stdin.close(io);
+    // Else we attempt to close the pipe twice.
+    child.stdin = null;
+
+    const term = try child.wait(io);
+
+    if (term.exited != 0) return error.WlCopyFailed;
+}
+
+test "read clipboard -- wl-clipboard" {
+    const io = std.testing.io;
+    const alloc = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+
+    var clip_queue = try ClipQueue.init(io, arena.allocator(), .{});
+    defer clip_queue.deinit(arena.allocator());
+
+    var backend = try Wayland.init(io, &arena, &clip_queue);
+    defer backend.deinit();
+
+    const clip_data = "This is some text";
+
+    try writeClipboardWlCopy(io, .{
+        .data = clip_data,
+        .is_text = true,
+        .mime_type = "text/plain;charset=utf-8",
+    });
+
+    try io.sleep(.fromMilliseconds(10), .real);
+
+    clip_queue.close();
+
+    // Sometimes we get a stale entry on init of the backend,
+    // so we take the tail of the queue.
+    var clips: [2]Clip = undefined;
+    const nclips = try clip_queue.queue.get(io, &clips, 1);
+
+    try std.testing.expectEqualSlices(u8, clip_data, clips[nclips - 1].data);
+}
+
+test "write clipboard -- wl-clipboard" {
+    const io = std.testing.io;
+    const alloc = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+
+    var clip_queue = try ClipQueue.init(io, arena.allocator(), .{});
+    defer clip_queue.deinit(arena.allocator());
+
+    var backend = try Wayland.init(io, &arena, &clip_queue);
+    defer backend.deinit();
+
+    const clip_data = "This is some text";
+    try backend.setClipboard(
+        .{
+            .data = clip_data,
+            .is_text = true,
+            .mime_type = "text/plain;charset=utf-8",
+        },
+    );
+
+    try io.sleep(.fromMilliseconds(10), .real);
+
+    const clip = try readClipboardWlPaste(io, arena.allocator());
+
+    try std.testing.expectEqualSlices(u8, clip_data, clip.data);
+}
