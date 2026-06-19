@@ -11,8 +11,6 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 // GNU General Public License for more details.
 
-//! Will be both the client and daemon implementations.
-
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -41,31 +39,6 @@ pub fn main(init: std.process.Init) !void {
     };
 
     if (cli_args.should_exit) return;
-
-    var clipboard = try Clipboard.init(io, &arena, .{});
-    defer clipboard.deinit();
-
-    const stdin = Io.File.stdin();
-    defer stdin.close(io);
-
-    var stdin_buf: [512]u8 = undefined;
-    var stdin_file_rdr = stdin.reader(io, &stdin_buf);
-    const rdr = &stdin_file_rdr.interface;
-    var line: ?[]u8 = try rdr.takeDelimiter('\n');
-
-    while (line != null) {
-        const cmd = parseCommand(line.?);
-
-        log.debug("REPL got command: {t}", .{cmd});
-
-        try clipboard.sendCommandRaw(cmd);
-
-        if (cmd == .Stop) {
-            break;
-        }
-
-        line = try rdr.takeDelimiter('\n');
-    }
 }
 
 fn parseCommand(input: []const u8) Command {
