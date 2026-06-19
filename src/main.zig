@@ -72,6 +72,8 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     var select: std.Io.Select(TaskResult) = .init(io, &buffer);
     defer select.cancelDiscard();
 
+    try select.concurrent(.signal, waitForInterrupt, .{});
+
     switch (cli_args.mode) {
         .Client => {
             log.err("Not yet implemented!", .{});
@@ -89,8 +91,8 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         },
     }
 
-    try select.concurrent(.signal, waitForInterrupt, .{});
-    _ = try select.await();
+    var await_buf: [2]TaskResult = undefined;
+    _ = try select.awaitMany(&await_buf, 2);
 }
 
 /// TODO: Support Windows. Caller is responsible for freeing returned memory.
@@ -124,6 +126,8 @@ fn waitForInterrupt() std.Io.Cancelable!void {
     std.posix.sigaction(.TERM, &action, null);
 
     try interrupt_event.wait(io);
+
+    log.info("Got a signal, stopping gracefully...", .{});
 }
 
 fn runDaemon(arena: *std.heap.ArenaAllocator, opts: Daemon.Opts) (std.Io.Cancelable || anyerror)!void {
