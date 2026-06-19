@@ -24,17 +24,23 @@ const Clip = zclip.Clip;
 const Clipboard = zclip.Clipboard;
 const Command = Clipboard.Command;
 
+const Cli = @import("Cli.zig");
+
+const log = std.log.scoped(.zclip);
+
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const alloc = init.gpa;
-
-    setupAndParseArgs(io, alloc, init.minimal.args) catch |err| switch (err) {
-        error.ShouldExit => return,
-        else => return err,
-    };
+    var cli_args = Cli.CliOpts{};
 
     var arena = std.heap.ArenaAllocator.init(alloc);
     defer arena.deinit();
+
+    Cli.setupAndParseArgs(io, &arena, init.minimal.args, &cli_args) catch {
+        std.process.exit(1);
+    };
+
+    if (cli_args.should_exit) return;
 
     var clipboard = try Clipboard.init(io, &arena, .{});
     defer clipboard.deinit();
@@ -50,7 +56,7 @@ pub fn main(init: std.process.Init) !void {
     while (line != null) {
         const cmd = parseCommand(line.?);
 
-        std.log.debug("Got command: {t}", .{cmd});
+        log.debug("REPL got command: {t}", .{cmd});
 
         try clipboard.sendCommandRaw(cmd);
 
@@ -59,57 +65,6 @@ pub fn main(init: std.process.Init) !void {
         }
 
         line = try rdr.takeDelimiter('\n');
-    }
-}
-
-fn setupAndParseArgs(io: Io, alloc: Allocator, args: std.process.Args) !void {
-    var stderr_buf: [1024]u8 = undefined;
-    var stderr_file = Io.File.stderr();
-
-    var file_writer = stderr_file.writer(io, &stderr_buf);
-    var writer = &file_writer.interface;
-
-    var diag: clap.Diagnostic = .{};
-    var res = clap.parse(
-        clap.Help,
-        &params,
-        clap.parsers.default,
-        args,
-        .{
-            .diagnostic = &diag,
-            .allocator = alloc,
-        },
-    ) catch |err| {
-        try diag.reportToFile(io, .stderr(), err);
-        return err;
-    };
-    defer res.deinit();
-
-    if (res.args.help != 0) {
-        try writer.print(preamble, .{});
-        try writer.flush();
-
-        try clap.helpToFile(io, .stderr(), clap.Help, &params, .{});
-        try writer.print(postscript, .{});
-        try writer.flush();
-
-        return error.ShouldExit;
-    } else if (res.args.version != 0) {
-        if (build_options.git_rev) |rev| {
-            try writer.print(
-                "zclip {s} ({s})\n",
-                .{ build_options.version, rev },
-            );
-        } else {
-            try writer.print(
-                "zclip {s}\n",
-                .{build_options.version},
-            );
-        }
-
-        try writer.flush();
-
-        return error.ShouldExit;
     }
 }
 
@@ -126,25 +81,3 @@ fn parseCommand(input: []const u8) Command {
         .mime_type = "text/plain;charset=utf-8",
     } };
 }
-
-const preamble =
-    \\ zclip
-    \\
-    \\ A program to manage your clipboard, including over a network.
-    \\
-    \\
-;
-const postscript =
-    \\
-    \\ This program is distributed in the hope that it will be useful,
-    \\ but WITHOUT ANY WARRANTY; without even the implied warranty of
-    \\ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-    \\ GNU General Public License for more details.
-    \\
-;
-
-const params = clap.parseParamsComptime(
-    \\-h, --help            Display this help and exit
-    \\--version             Show the version of the software
-    \\-v, --verbose         Set the default log level to debug
-);
