@@ -24,7 +24,7 @@ opts: Opts,
 arena: *ArenaAllocator,
 io: Io,
 clipboard: zclip.Clipboard,
-socket: Io.net.Server,
+server: *Io.net.Server,
 unix_accept_task: Io.Future(void),
 
 const log = std.log.scoped(.Daemon);
@@ -34,19 +34,20 @@ pub const Opts = struct {
     socket_path: []const u8,
 };
 
-fn acceptConnections(io: Io, server: Io.net.Server) void {
+fn acceptConnections(io: Io, server: *Io.net.Server) void {
     var group = Io.Group.init;
 
     defer group.cancel(io); // TODO: Send a Stop message and await instead.
 
     while (true) {
         const stream = server.accept(io) catch |err| {
-            log.err("acceptConnections, error accepting connection: {e}", .{err});
+            log.err("acceptConnections, error accepting connection: {t}", .{err});
+            continue;
         };
 
         log.debug("Accepted UNIX socket connection", .{});
 
-        try group.concurrent(io, handleConnection, .{ io, stream });
+        group.concurrent(io, handleConnection, .{ io, stream }) catch unreachable;
     }
 }
 
@@ -58,22 +59,25 @@ fn handleConnection(io: Io, stream: Io.net.Stream) !void {
 pub fn init(io: Io, arena: *ArenaAllocator, opts: Opts) !Daemon {
     const clipboard = try zclip.Clipboard.init(io, arena, opts.clipboard);
     var addr = try Io.net.UnixAddress.init(opts.socket_path);
-    const socket = try addr.listen(io, .{});
-    const task = try io.concurrent(acceptConnections, .{ io, socket });
+
+    const server = try arena.allocator().create(Io.net.Server);
+    server.* = try addr.listen(io, .{});
+
+    const task = try io.concurrent(acceptConnections, .{ io, server });
 
     return .{
         .io = io,
         .arena = arena,
         .opts = opts,
         .clipboard = clipboard,
-        .socket = socket,
+        .server = server,
         .unix_accept_task = task,
     };
 }
 
 pub fn deinit(self: *Daemon) void {
     self.unix_accept_task.await(self.io);
-    self.socket.deinit(self.io);
+    self.server.deinit(self.io);
     self.clipboard.deinit();
     self.arena.deinit();
 }
