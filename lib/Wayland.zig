@@ -444,11 +444,8 @@ const Ext = struct {
             .mime_type = ask_for,
             .is_text = is_text,
         }) catch |err| switch (err) {
-            error.Canceled => {
-                log.debug("task cancelled whilst writing clip to queue. Some data will be lost.", .{});
-            },
             error.Closed => {
-                log.info("clip queue was closed. Some data will be lost.", .{});
+                log.info("Clip queue was closed. Some data will be lost.", .{});
             },
         };
     }
