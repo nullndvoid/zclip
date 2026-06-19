@@ -23,9 +23,9 @@ const Daemon = @This();
 opts: Opts,
 arena: *ArenaAllocator,
 io: Io,
-clipboard: zclip.Clipboard,
-server: Io.net.Server,
-select_tasks: Io.Select(TaskResults),
+clipboard: ?zclip.Clipboard,
+server: ?Io.net.Server,
+select_tasks: ?Io.Select(TaskResults),
 select_tasks_buf: [1]TaskResults,
 
 const TaskResults = union(enum) {
@@ -75,9 +75,9 @@ pub fn init(io: Io, arena: *ArenaAllocator, opts: Opts) Daemon {
         .io = io,
         .arena = arena,
         .opts = opts,
-        .clipboard = undefined,
-        .server = undefined,
-        .select_tasks = undefined,
+        .clipboard = null,
+        .server = null,
+        .select_tasks = null,
         .select_tasks_buf = undefined,
     };
 }
@@ -96,16 +96,22 @@ pub fn start(self: *Daemon) !void {
 
     self.select_tasks = .init(self.io, &self.select_tasks_buf);
 
-    try self.select_tasks.concurrent(.unix, acceptConnections, .{ self.io, &self.server });
+    try self.select_tasks.?.concurrent(.unix, acceptConnections, .{ self.io, &self.server.? });
 
-    defer self.deinit();
-
-    _ = self.select_tasks.await() catch return;
+    _ = self.select_tasks.?.await() catch return;
 }
 
 pub fn deinit(self: *Daemon) void {
-    self.select_tasks.cancelDiscard();
-    self.server.deinit(self.io);
-    self.clipboard.deinit();
-    self.arena.deinit();
+    if (self.select_tasks) |*select_tasks| {
+        select_tasks.cancelDiscard();
+        self.select_tasks = null;
+    }
+    if (self.server) |*server| {
+        server.deinit(self.io);
+        self.server = null;
+    }
+    if (self.clipboard) |*clipboard| {
+        clipboard.deinit();
+        self.clipboard = null;
+    }
 }
