@@ -24,8 +24,15 @@ opts: Opts,
 arena: *ArenaAllocator,
 io: Io,
 clipboard: zclip.Clipboard,
-server: *Io.net.Server,
-unix_accept_task: Io.Future(void),
+server: Io.net.Server,
+select_tasks: Io.Select(TaskResults),
+select_tasks_buf: [1]TaskResults,
+
+const TaskResults = union(enum) {
+    unix: void,
+    // Does not matter yet.
+    inet: anyerror!void,
+};
 
 const log = std.log.scoped(.Daemon);
 
@@ -41,8 +48,15 @@ fn acceptConnections(io: Io, server: *Io.net.Server) void {
 
     while (true) {
         const stream = server.accept(io) catch |err| {
-            log.err("acceptConnections, error accepting connection: {t}", .{err});
-            continue;
+            switch (err) {
+                error.Canceled => {
+                    return;
+                },
+                else => {
+                    log.err("acceptConnections, error accepting connection: {t}", .{err});
+                    continue;
+                },
+            }
         };
 
         log.debug("Accepted UNIX socket connection", .{});
@@ -59,11 +73,7 @@ fn handleConnection(io: Io, stream: Io.net.Stream) !void {
 pub fn init(io: Io, arena: *ArenaAllocator, opts: Opts) !Daemon {
     const clipboard = try zclip.Clipboard.init(io, arena, opts.clipboard);
     var addr = try Io.net.UnixAddress.init(opts.socket_path);
-
-    const server = try arena.allocator().create(Io.net.Server);
-    server.* = try addr.listen(io, .{});
-
-    const task = try io.concurrent(acceptConnections, .{ io, server });
+    const server = try addr.listen(io, .{});
 
     return .{
         .io = io,
@@ -71,12 +81,26 @@ pub fn init(io: Io, arena: *ArenaAllocator, opts: Opts) !Daemon {
         .opts = opts,
         .clipboard = clipboard,
         .server = server,
-        .unix_accept_task = task,
+        .select_tasks = undefined,
+        .select_tasks_buf = undefined,
     };
 }
 
+/// Starts the daemon worker, blocking. May be cancelled by a signal. See signal handling in `main.zig`.
+///
+/// TODO: Make this select between internet stuff and unix socket stuff.
+pub fn start(self: *Daemon) void {
+    self.select_tasks = .init(self.io, self.select_tasks_buf);
+
+    try self.select_tasks.concurrent(.unix, acceptConnections, .{ self.io, &self.server });
+
+    defer self.deinit();
+
+    _ = self.select_tasks.await();
+}
+
 pub fn deinit(self: *Daemon) void {
-    self.unix_accept_task.await(self.io);
+    self.select_tasks.cancelDiscard();
     self.server.deinit(self.io);
     self.clipboard.deinit();
     self.arena.deinit();
