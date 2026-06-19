@@ -60,7 +60,6 @@ const WorkerContext = struct {
     io: Io,
     alloc: Allocator,
     in: *CommandQueue,
-    out: *CommandQueue,
     clip_queue: *ClipQueue,
     backend: *Backend,
 };
@@ -107,10 +106,7 @@ fn workerFn(ctx: *WorkerContext) anyerror!void {
     const commands_in_buf = try ctx.alloc.alloc(Command, ctx.in.capacity());
     defer ctx.alloc.free(commands_in_buf);
 
-    const commands_out_buf = try ctx.alloc.alloc(Command, ctx.out.capacity());
-    defer ctx.alloc.free(commands_out_buf);
-
-    var out_commands = commands_out_buf;
+    var clips = clip_queue_buf;
 
     while (true) {
         pollInCommands(ctx, commands_in_buf) catch |err| switch (err) {
@@ -130,17 +126,16 @@ fn workerFn(ctx: *WorkerContext) anyerror!void {
             },
         };
 
-        const clips = clip_queue_buf[0..clips_read];
-
+        clips = clip_queue_buf[0..clips_read];
         for (clips, 0..) |clip, idx| {
-            out_commands[idx] = .{ .Clip = clip };
+            clips[idx] = clip;
         }
 
         // Now write the read clips. We can poll in commands whilst waiting instead of blocking with putAll.
         var written: usize = 0;
         while (written < clips_read) {
-            out_commands = out_commands[written..clips_read];
-            written += try ctx.out.put(ctx.io, out_commands, 0);
+            clips = clips[written..clips_read];
+            written += try ctx.clip_queue.queue.put(ctx.io, clips, 0);
 
             pollInCommands(ctx, commands_in_buf) catch |err| switch (err) {
                 error.Stop => return,
@@ -173,21 +168,13 @@ pub fn init(io: Io, arena: *ArenaAllocator, config: Config) !Clipboard {
         config.commands_in_buf_size,
     );
 
-    const commands_out_buf = try arena.allocator().alloc(
-        Command,
-        config.commands_out_buf_size,
-    );
-
     const commands_in = try arena.allocator().create(CommandQueue);
-    const commands_out = try arena.allocator().create(CommandQueue);
 
     commands_in.* = CommandQueue.init(commands_in_buf);
-    commands_out.* = CommandQueue.init(commands_out_buf);
 
     const worker_ctx = try arena.allocator().create(WorkerContext);
     worker_ctx.* = .{
         .in = commands_in,
-        .out = commands_out,
         .clip_queue = read_clip_queue,
         .io = io,
         .alloc = arena.allocator(),
