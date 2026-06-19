@@ -62,9 +62,8 @@ const ListenerContext = struct {
     clip_to_write: ?Clip,
     /// Destroyed after we wrote to the clipboard.
     current_source: ?DataControlSource = null,
-    /// Cleaned up on deinit. A list of pending and completed reads.
-    /// This could probably be bounded and reset once full AND on deinit.
-    pending_reads: std.ArrayList(Io.Future(void)),
+    /// Cleaned up on deinit. A group of pending and completed reads.
+    pending_reads: Io.Group,
     /// Passed in from `Clipboard`. Written to when the system sees new entries.
     clip_queue: *ClipQueue,
 };
@@ -103,8 +102,7 @@ pub fn init(io: Io, arena: *std.heap.ArenaAllocator, clip_queue: *ClipQueue) !*W
         .current_mime = try .init(arena.allocator(), 16),
         .clip_to_write = null,
         .current_source = null,
-        // TODO: Make this configurable.
-        .pending_reads = try .initCapacity(arena.allocator(), 10),
+        .pending_reads = .init,
         .clip_queue = clip_queue,
     };
 
@@ -179,9 +177,7 @@ pub fn deinit(self: *Wayland) void {
     }
 
     // Drain any pending reads.
-    for (self.listener_ctx.pending_reads.items) |*read| {
-        read.await(self.listener_ctx.io);
-    }
+    self.listener_ctx.pending_reads.await(self.listener_ctx.io) catch {};
 
     if (self.listener_ctx.current_source) |*src| {
         src.destroy();
@@ -401,16 +397,11 @@ const Ext = struct {
 
                 _ = std.c.close(write_fd);
 
-                const read_future = userdata.io.concurrent(
+                userdata.pending_reads.concurrent(
+                    userdata.io,
                     readClip,
                     .{ read_fd, userdata, ask_for_copy, is_text },
                 ) catch unreachable;
-
-                // If out of memory, await the first element and replace it.
-                userdata.pending_reads.appendBounded(read_future) catch {
-                    userdata.pending_reads.items[0].await(userdata.io);
-                    userdata.pending_reads.items[0] = read_future;
-                };
             },
             // For now we ignore these.
             .primary_selection => {},
