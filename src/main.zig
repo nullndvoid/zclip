@@ -127,8 +127,10 @@ fn waitForInterrupt() std.Io.Cancelable!void {
 }
 
 fn runDaemon(arena: *std.heap.ArenaAllocator, opts: Daemon.Opts) (std.Io.Cancelable || anyerror)!void {
-    var daemon = try Daemon.init(io, arena, opts);
+    var daemon = Daemon.init(io, arena, opts);
     defer daemon.deinit();
+
+    try daemon.start();
 }
 
 test {

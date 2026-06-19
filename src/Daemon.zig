@@ -70,17 +70,13 @@ fn handleConnection(io: Io, stream: Io.net.Stream) !void {
     _ = stream; // autofix
 }
 
-pub fn init(io: Io, arena: *ArenaAllocator, opts: Opts) !Daemon {
-    const clipboard = try zclip.Clipboard.init(io, arena, opts.clipboard);
-    var addr = try Io.net.UnixAddress.init(opts.socket_path);
-    const server = try addr.listen(io, .{});
-
+pub fn init(io: Io, arena: *ArenaAllocator, opts: Opts) Daemon {
     return .{
         .io = io,
         .arena = arena,
         .opts = opts,
-        .clipboard = clipboard,
-        .server = server,
+        .clipboard = undefined,
+        .server = undefined,
         .select_tasks = undefined,
         .select_tasks_buf = undefined,
     };
@@ -89,14 +85,22 @@ pub fn init(io: Io, arena: *ArenaAllocator, opts: Opts) !Daemon {
 /// Starts the daemon worker, blocking. May be cancelled by a signal. See signal handling in `main.zig`.
 ///
 /// TODO: Make this select between internet stuff and unix socket stuff.
-pub fn start(self: *Daemon) void {
-    self.select_tasks = .init(self.io, self.select_tasks_buf);
+pub fn start(self: *Daemon) !void {
+    self.clipboard = try zclip.Clipboard.init(
+        self.io,
+        self.arena,
+        self.opts.clipboard,
+    );
+    var addr = try Io.net.UnixAddress.init(self.opts.socket_path);
+    self.server = try addr.listen(self.io, .{});
+
+    self.select_tasks = .init(self.io, &self.select_tasks_buf);
 
     try self.select_tasks.concurrent(.unix, acceptConnections, .{ self.io, &self.server });
 
     defer self.deinit();
 
-    _ = self.select_tasks.await();
+    _ = self.select_tasks.await() catch return;
 }
 
 pub fn deinit(self: *Daemon) void {
