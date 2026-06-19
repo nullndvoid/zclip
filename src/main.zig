@@ -23,34 +23,114 @@ const Clipboard = zclip.Clipboard;
 const Command = Clipboard.Command;
 
 const Cli = @import("Cli.zig");
+const Daemon = @import("Daemon.zig");
+
+// const Client = @import("Client.zig");
 
 const log = std.log.scoped(.zclip);
 
-pub fn main(init: std.process.Init) !void {
-    const io = init.io;
-    const alloc = init.gpa;
-    var cli_args = Cli.CliOpts{};
+pub fn main(minimal: std.process.Init.Minimal) !void {
+    var gpa = std.heap.DebugAllocator(.{
+        .enable_memory_limit = true,
+    }).init;
 
-    var arena = std.heap.ArenaAllocator.init(alloc);
+    var io_gpa = std.heap.DebugAllocator(.{}).init;
+    defer _ = io_gpa.deinit();
+
+    var io_impl = Io.Threaded.init(io_gpa.allocator(), .{});
+    defer io_impl.deinit();
+
+    io = io_impl.io();
+
+    defer {
+        const leaks = gpa.deinit();
+        if (leaks == .leak) {
+            log.warn("Memory leaked from allocator.", .{});
+        }
+    }
+
+    var arena = std.heap.ArenaAllocator.init(gpa.allocator());
     defer arena.deinit();
 
-    Cli.setupAndParseArgs(io, &arena, init.minimal.args, &cli_args) catch {
+    var cli_args = Cli.CliOpts{};
+
+    Cli.setupAndParseArgs(io, &arena, minimal.args, &cli_args) catch {
         std.process.exit(1);
     };
 
     if (cli_args.should_exit) return;
-}
-
-fn parseCommand(input: []const u8) Command {
-    const line = std.mem.trim(u8, input, " \t\r");
-
-    if (std.mem.eql(u8, line, "stop")) {
-        return .Stop;
+    // TODO: As mentioned elsewhere this is more of a config issue.
+    if (cli_args.memory_limit) |limit| {
+        gpa.requested_memory_limit = limit;
     }
 
-    return .{ .WriteClipboard = .{
-        .data = line,
-        .is_text = true,
-        .mime_type = "text/plain;charset=utf-8",
-    } };
+    const TaskResult = union(enum) {
+        daemon: (anyerror || std.Io.Cancelable)!void,
+        signal: std.Io.Cancelable!void,
+    };
+    var buffer: [2]TaskResult = undefined;
+    var select: std.Io.Select(TaskResult) = .init(io, &buffer);
+    defer select.cancelDiscard();
+
+    switch (cli_args.mode) {
+        .Client => {
+            log.err("Not yet implemented!", .{});
+            return;
+        },
+        .Daemon => {
+            const socket_path = cli_args.socket_path orelse try getSocketPath(arena.allocator(), minimal.environ);
+
+            try select.concurrent(.daemon, runDaemon, .{
+                &arena,
+                .{
+                    .socket_path = socket_path,
+                },
+            });
+        },
+    }
+
+    try select.concurrent(.signal, waitForInterrupt, .{});
+    _ = try select.await();
+}
+
+/// TODO: Support Windows. Caller is responsible for freeing returned memory.
+fn getSocketPath(alloc: Allocator, env: std.process.Environ) ![]const u8 {
+    const runtime_dir = try env.getAlloc(alloc, "XDG_RUNTIME_DIR");
+    defer alloc.free(runtime_dir);
+
+    return try std.fmt.allocPrint(alloc, "{s}/zclip.sock", .{runtime_dir});
+}
+
+/// Global for signal handler usage.
+var io: Io = undefined;
+/// Global for signal handler usage.
+var interrupt_event: std.Io.Event = .unset;
+
+/// Sets up signal handling and waits until an interrupt is recieved.
+fn waitForInterrupt() std.Io.Cancelable!void {
+    const action: std.posix.Sigaction = .{
+        .handler = .{
+            .handler = struct {
+                fn handler(_: std.posix.SIG) callconv(.c) void {
+                    interrupt_event.set(io);
+                }
+            }.handler,
+        },
+        .mask = std.posix.sigemptyset(),
+        .flags = 0,
+    };
+
+    std.posix.sigaction(.INT, &action, null);
+    std.posix.sigaction(.TERM, &action, null);
+
+    try interrupt_event.wait(io);
+}
+
+fn runDaemon(arena: *std.heap.ArenaAllocator, opts: Daemon.Opts) (std.Io.Cancelable || anyerror)!void {
+    var daemon = try Daemon.init(io, arena, opts);
+    defer daemon.deinit();
+}
+
+test {
+    std.testing.refAllDecls(@This());
 }
