@@ -1,0 +1,6 @@
+.{
+    .debugging = .{
+        // 512 MB as an example. 1024 * 1024 * 512.
+        .memory_limit = 536870912,
+    },
+}

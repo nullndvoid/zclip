@@ -23,6 +23,7 @@ const Clipboard = zclip.Clipboard;
 const Command = Clipboard.Command;
 
 const Cli = @import("Cli.zig");
+const Config = @import("Config.zig");
 const Daemon = @import("Daemon.zig");
 
 // const Client = @import("Client.zig");
@@ -54,13 +55,17 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
 
     var cli_args = Cli.CliOpts{};
 
-    Cli.setupAndParseArgs(io, &arena, minimal.args, &cli_args) catch {
-        std.process.exit(1);
-    };
+    try Cli.setupAndParseArgs(io, &arena, minimal.args, &cli_args);
 
     if (cli_args.should_exit) return;
-    // TODO: As mentioned elsewhere this is more of a config issue.
-    if (cli_args.memory_limit) |limit| {
+
+    var envmap = try minimal.environ.createMap(gpa.allocator());
+    defer envmap.deinit();
+
+    const config = try Config.fromWellKnown(io, arena.allocator(), &envmap);
+    log.info("Successfully parsed config file", .{});
+
+    if (config.debugging.memory_limit) |limit| {
         gpa.requested_memory_limit = limit;
     }
 

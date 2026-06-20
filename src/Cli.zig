@@ -201,7 +201,6 @@ pub const Mode = enum {
     Daemon,
 };
 
-const BACKEND_ALLOC_LIMIT_DEFAULT = 1024 * 1024 * 512;
 const IS_DEBUG = @import("builtin").mode == .Debug;
 
 pub const CliOpts = struct {
@@ -209,11 +208,8 @@ pub const CliOpts = struct {
     /// This is false by default on other optimise modes.
     verbose: bool = IS_DEBUG,
     mode: Mode = .Client,
-    /// The path to the UNIX socket.
+    /// The path to the UNIX socket. Should override any config set if passed.
     socket_path: ?[]const u8 = null,
     /// True when help or usage was printed etc.
     should_exit: bool = false,
-    /// Optional memory limit for the process excluding I/O.
-    /// TODO: This is more of an application config issue.
-    memory_limit: ?usize = if (IS_DEBUG) BACKEND_ALLOC_LIMIT_DEFAULT else null,
 };
