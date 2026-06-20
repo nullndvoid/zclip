@@ -44,6 +44,10 @@
             .url = "git+https://github.com/ziglibs/known-folders.git#207c34a16e4365edc20d92c7892f962b3bed46e8",
             .hash = "known_folders-0.0.0-Fy-PJsbKAACbDh9bBxR0MMThxZSS6A9RH4apWphNHY70",
         },
+        .toml = .{
+            .url = "git+https://github.com/sam701/zig-toml?ref=zig-0.16#8685923e32e8b8a795eb2715684236975a70faed",
+            .hash = "toml-0.3.0-bV14BRmKAQAWR0FT0KUKFwVJTImaFhWjSe6HfSMtNZOH",
+        },
     },
     .paths = .{
         "build.zig",

@@ -62,10 +62,13 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     var envmap = try minimal.environ.createMap(gpa.allocator());
     defer envmap.deinit();
 
-    const config = try Config.fromWellKnown(io, arena.allocator(), &envmap);
+    var config = try Config.fromWellKnown(io, arena.allocator(), &envmap);
+    defer config.deinit();
+    const cfg = config.data;
+
     log.info("Successfully parsed config file", .{});
 
-    if (config.debugging.memory_limit) |limit| {
+    if (cfg.debugging.memory_limit) |limit| {
         gpa.requested_memory_limit = limit;
     }
 

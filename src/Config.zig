@@ -18,6 +18,7 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
 const known = @import("known-folders");
+const toml = @import("toml");
 
 const BACKEND_ALLOC_LIMIT_DEFAULT = 1024 * 1024 * 512;
 const IS_DEBUG = @import("builtin").mode == .Debug;
@@ -26,12 +27,51 @@ const log = std.log.scoped(.config);
 
 const Config = @This();
 
-debugging: Debugging = .{},
+parsed: toml.Parsed(InnerConfig),
+data: InnerConfig,
 
-/// Optional memory limit for the process excluding I/O (futures). More useful for Debugging.
-const Debugging = struct {
-    memory_limit: ?usize = if (IS_DEBUG) BACKEND_ALLOC_LIMIT_DEFAULT else null,
+pub fn deinit(self: *Config) void {
+    self.parsed.deinit();
+}
+
+/// Wrapped in Config because we want to manage the lifetimes of data allocated but
+/// automatically parse into a struct.
+pub const InnerConfig = struct {
+    debugging: Debugging = .{},
+
+    /// Optional memory limit for the process excluding I/O (futures). More useful for Debugging.
+    const Debugging = struct {
+        memory_limit: ?usize = if (IS_DEBUG) BACKEND_ALLOC_LIMIT_DEFAULT else null,
+    };
 };
+
+fn parseSlice(allocator: Allocator, data: []const u8, filename: []const u8) !Config {
+    var parser = toml.Parser(InnerConfig).init(allocator);
+    defer parser.deinit();
+
+    const parsed = parser.parseString(data) catch |err| {
+        const info = parser.error_info orelse return err;
+
+        switch (info) {
+            .parse => |pos| {
+                log.err("TOML parse error in {s} ({d}:{d})", .{ filename, pos.line, pos.pos });
+            },
+            .struct_mapping => |mapping| {
+                log.err("TOML error mapping input to config struct. More info below:", .{});
+                for (mapping) |map| {
+                    log.err("Missing field/table: {s}. See README for information on configuring zclip.", .{map});
+                }
+            },
+        }
+
+        return err;
+    };
+
+    return .{
+        .data = parsed.value,
+        .parsed = parsed,
+    };
+}
 
 pub fn fromPath(io: Io, allocator: Allocator, absolute_path: []const u8) !Config {
     var config = Io.Dir.openFileAbsolute(io, absolute_path, .{}) catch |err| {
@@ -52,28 +92,10 @@ pub fn fromPath(io: Io, allocator: Allocator, absolute_path: []const u8) !Config
     var file_rdr = config.reader(io, &read_buf);
     const rdr = &file_rdr.interface;
 
-    const bytes = try rdr.allocRemainingAlignedSentinel(allocator, .unlimited, .@"1", 0);
+    const bytes = try rdr.allocRemaining(allocator, .unlimited);
     defer allocator.free(bytes);
 
-    var diag: std.zon.parse.Diagnostics = .{};
-    return std.zon.parse.fromSlice(Config, allocator, bytes, &diag, .{}) catch |err| {
-        switch (err) {
-            error.ParseZon => {
-                var allocating = std.Io.Writer.Allocating.init(allocator);
-
-                const writer = &allocating.writer;
-                try diag.format(writer);
-
-                const why = try allocating.toOwnedSlice();
-                defer allocator.free(why);
-
-                log.err("Could not parse config file. Why: {s}", .{why});
-            },
-            else => {},
-        }
-
-        return err;
-    };
+    return try parseSlice(allocator, bytes, std.fs.path.basename(absolute_path));
 }
 
 /// TODO: Use a Well known location e.g. $XDG_CONFIG_DIR/zclip/zclip.zon.
@@ -93,7 +115,7 @@ pub fn fromWellKnown(io: Io, allocator: Allocator, environ: *const std.process.E
         return error.DirectoryNotFound;
     };
 
-    const config_path = try std.fmt.allocPrint(allocator, "{s}/zclip/zclip.zon", .{config_dir_path});
+    const config_path = try std.fmt.allocPrint(allocator, "{s}/zclip/zclip.toml", .{config_dir_path});
     allocator.free(config_dir_path);
     defer allocator.free(config_path);
 
