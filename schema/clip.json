@@ -1,6 +1,6 @@
 {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "$id": "https://codeberg.org/nullndvoid2/zclip/raw/branch/dev/schema/clip.json",
+    "$id": "https://codeberg.org/nullndvoid2/zclip/raw/branch/rewrite/schema/clip.json",
     "title": "Clip",
     "description": "A clipboard entry",
     "type": "object",
