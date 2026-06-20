@@ -1,0 +1,5 @@
+# Example zclip configuration file.
+
+[debugging]
+# 1024 * 1024 * 512 = 512MB. Might be useful to set for debugging purposes. 
+# memory_limit = 536870912
