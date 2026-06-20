@@ -11,19 +11,7 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 // GNU General Public License for more details.
 
-//! A library for management of the system clipboard, as well as
-//! networking routines for usage in my consuming apps.
+//! Configuration for zclip.
 
 const std = @import("std");
-const Io = std.Io;
 
-const opts = @import("options");
-
-pub const Backend = switch (opts.platform) {
-    .wayland => @import("wayland.zig"),
-    .windows => @import("windows.zig"),
-};
-
-test {
-    std.testing.refAllDecls(@This());
-}

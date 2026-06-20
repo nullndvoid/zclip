@@ -23,7 +23,7 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const builtin = @import("builtin");
 
-const BORDER = "=" ** 80;
+const BORDER: [80:0]u8 = @splat('=');
 
 // use in custom panic handler
 var current_test: ?[]const u8 = null;

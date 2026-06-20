@@ -11,10 +11,19 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 // GNU General Public License for more details.
 
-//! Type of a clipboard entry. Entries are owned by their toplevel Backend i.e. Wayland.
+//! A clipboard entry and associated data.
 
 const std = @import("std");
 
+/// Owned by the backend, which will be owned by the `Manager`. Should be
+/// cleaned up on deinit.
 data: []const u8,
-mime_type: []const u8,
-node: std.DoublyLinkedList.Node,
+/// Assumed to be correct. If we are reading from system clipboard, this is assumed valid.
+/// For writes, we perform no checks on the validity of the (data, mimetype) pair.
+mime_type: [:0]const u8,
+
+/// Set if the clipping is text. Not assumed UTF-8 although this check could be added later.
+is_text: bool,
+
+/// Used by the `Clipboard` manager.
+node: std.DoublyLinkedList.Node = .{},
