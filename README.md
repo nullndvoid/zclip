@@ -18,6 +18,12 @@ Maybe something like this already exists but this would be a nice tool to have :
 In fact, you could probably use KDE Connect but I have had my issues with it, and it has many
 features I am less worried about.
 
+# Notes
+
+When developing you should check changes compile on various platforms with `zig build check -Dtarget=x86_64-os-abi`.
+
+ZLS should do this for us since there is a `check` step defined.
+
 # Authors
 
 - J. Hinchliffe

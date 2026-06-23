@@ -99,6 +99,21 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(exe);
 
+    const exe_check = b.addExecutable(.{
+        .name = "zclip",
+        .root_module = exe.root_module,
+        .use_llvm = true,
+        .use_lld = true,
+    });
+
+    exe_check.root_module.addImport("clap", clap.module("clap"));
+    exe_check.root_module.addImport("known-folders", known_folders.module("known-folders"));
+    exe_check.root_module.addImport("toml", toml.module("toml"));
+    exe_check.root_module.addOptions("options", exe_options);
+
+    const check = b.step("check", "Check if zclip application compiles.");
+    check.dependOn(&exe_check.step);
+
     const run_step = b.step("run", "Run the app");
 
     const run_cmd = b.addRunArtifact(exe);
