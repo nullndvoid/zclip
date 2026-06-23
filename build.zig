@@ -2,41 +2,46 @@ const std = @import("std");
 
 const Scanner = @import("wayland").Scanner;
 
+const Platform = enum { wayland, windows };
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
     const platform = b.option(
-        enum { wayland, windows },
+        Platform,
         "platform",
         "Target platform",
-    ) orelse switch (@import("builtin").os.tag) {
-        .linux => .wayland,
-        .windows => .windows,
+    ) orelse switch (target.result.os.tag) {
+        .linux => Platform.wayland,
+        .windows => Platform.windows,
         else => @panic("unsupported platform"),
     };
 
     var wayland: *std.Build.Module = undefined;
     var windows: *std.Build.Module = undefined;
 
-    if (platform == .wayland) {
-        const scanner = Scanner.create(b, .{});
-        wayland = b.createModule(.{ .root_source_file = scanner.result });
-        scanner.addCustomProtocol(b.path("protocols/ext-data-control-v1.xml"));
-        scanner.addCustomProtocol(b.path("protocols/wlr-data-control-unstable-v1.xml"));
+    switch (platform) {
+        .wayland => {
+            const scanner = Scanner.create(b, .{});
+            wayland = b.createModule(.{ .root_source_file = scanner.result });
+            scanner.addCustomProtocol(b.path("protocols/ext-data-control-v1.xml"));
+            scanner.addCustomProtocol(b.path("protocols/wlr-data-control-unstable-v1.xml"));
 
-        scanner.generate("ext_data_control_manager_v1", 1);
-        scanner.generate("zwlr_data_control_manager_v1", 1);
-        scanner.generate("wl_seat", 1);
-    } else if (platform == .windows) {
-        const windows_dep = b.dependency("win32", .{});
-        windows = windows_dep.module("win32");
+            scanner.generate("ext_data_control_manager_v1", 1);
+            scanner.generate("zwlr_data_control_manager_v1", 1);
+            scanner.generate("wl_seat", 1);
+        },
+        .windows => {
+            const windows_dep = b.dependency("win32", .{});
+            windows = windows_dep.module("win32");
+        },
     }
 
     const options = b.addOptions();
     const exe_options = b.addOptions();
 
-    options.addOption(@TypeOf(platform), "platform", platform);
+    options.addOption(Platform, "platform", platform);
     exe_options.addOption([]const u8, "version", @import("build.zig.zon").version);
 
     const git_rev = gitShortRev(b) catch |err| blk: {
@@ -53,14 +58,17 @@ pub fn build(b: *std.Build) void {
     mod.addOptions("options", options);
     mod.link_libc = true;
 
-    if (platform == .wayland) {
-        mod.addImport("wayland", wayland);
-        mod.linkSystemLibrary("wayland-client", .{
-            .use_pkg_config = .force,
-        });
-    } else if (platform == .windows) {
-        mod.addImport("win32", windows);
-        mod.linkSystemLibrary("User32", .{});
+    switch (platform) {
+        .wayland => {
+            mod.addImport("wayland", wayland);
+            mod.linkSystemLibrary("wayland-client", .{
+                .use_pkg_config = .force,
+            });
+        },
+        .windows => {
+            mod.addImport("win32", windows);
+            mod.linkSystemLibrary("user32", .{});
+        },
     }
 
     const clap = b.dependency("clap", .{});

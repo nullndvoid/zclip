@@ -28,22 +28,23 @@ const WPARAM = win32.WPARAM;
 const WM_CLIPBOARDUPDATE = win32.WM_CLIPBOARDUPDATE;
 const WM_DESTROY = win32.WM_DESTROY;
 
-const log = std.log.scoped(.Windows);
+const ClipQueue = @import("root.zig").ClipQueue;
 
-pub const Options = struct {};
+const log = std.log.scoped(.Windows);
 
 hwnd: HWND,
 io: Io,
 arena: *Arena,
 worker_handle: Future(anyerror!void),
 lang_id: u32,
+clip_queue: *ClipQueue,
 
 const Windows = @This();
 
 /// Used by windowProc because Microslop loves globals.
 var lang_id_global: u32 = undefined;
 
-pub fn init(io: Io, arena: *Arena, _: Options) !*Windows {
+pub fn init(io: Io, arena: *Arena, clip_queue: *ClipQueue) !*Windows {
     var hwnd: HWND = undefined;
     const lang_id = win32.GetUserDefaultUILanguage();
 
@@ -105,6 +106,7 @@ pub fn init(io: Io, arena: *Arena, _: Options) !*Windows {
             self,
         }),
         .lang_id = lang_id,
+        .clip_queue = clip_queue,
     };
 
     lang_id_global = lang_id;
@@ -158,7 +160,13 @@ fn workerThread(self: *Windows) anyerror!void {
         if (ret == -1) {
             const err = win32.GetLastError();
             self.printError(err, "GetMessageW");
+
+            // For now just continue once the error is logged. TODO: Figure out what is fatal.
+            continue;
         }
+
+        win32.TranslateMessage(&msg);
+        win32.DispatchMessage(&msg);
     }
 }
 
