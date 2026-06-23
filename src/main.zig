@@ -117,7 +117,15 @@ var io: Io = undefined;
 var interrupt_event: std.Io.Event = .unset;
 
 /// Sets up signal handling and waits until an interrupt is recieved.
-fn waitForInterrupt() std.Io.Cancelable!void {
+const waitForInterrupt = switch (@import("builtin").os.tag) {
+    .linux => waitForInterruptPosix,
+    .windows => waitForInterruptWin32,
+    else => @compileError("TODO"),
+};
+
+fn waitForInterruptWin32() std.Io.Cancelable!void {}
+
+fn waitForInterruptPosix() std.Io.Cancelable!void {
     const action: std.posix.Sigaction = .{
         .handler = .{
             .handler = struct {
@@ -134,7 +142,6 @@ fn waitForInterrupt() std.Io.Cancelable!void {
     std.posix.sigaction(.TERM, &action, null);
 
     try interrupt_event.wait(io);
-
     log.info("Got a signal, stopping gracefully...", .{});
 }
 

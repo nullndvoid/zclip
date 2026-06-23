@@ -28,7 +28,9 @@ const WPARAM = win32.WPARAM;
 const WM_CLIPBOARDUPDATE = win32.WM_CLIPBOARDUPDATE;
 const WM_DESTROY = win32.WM_DESTROY;
 
-const ClipQueue = @import("root.zig").ClipQueue;
+const zclip = @import("root.zig");
+const ClipQueue = zclip.ClipQueue;
+const Clip = zclip.Clip;
 
 const log = std.log.scoped(.Windows);
 
@@ -43,6 +45,7 @@ const Windows = @This();
 
 /// Used by windowProc because Microslop loves globals.
 var lang_id_global: u32 = undefined;
+var alloc_global: Allocator = undefined;
 
 pub fn init(io: Io, arena: *Arena, clip_queue: *ClipQueue) !*Windows {
     var hwnd: HWND = undefined;
@@ -50,7 +53,7 @@ pub fn init(io: Io, arena: *Arena, clip_queue: *ClipQueue) !*Windows {
 
     const hinst = win32.GetModuleHandleW(null);
     if (hinst == null) {
-        printErrorWithLangId(lang_id, "GetModuleHandleW");
+        printErrorWithLangId(arena.allocator(), lang_id, "GetModuleHandleW");
 
         return error.WindowInit;
     }
@@ -66,16 +69,16 @@ pub fn init(io: Io, arena: *Arena, clip_queue: *ClipQueue) !*Windows {
 
     const atom = win32.RegisterClassExW(&wc);
     if (atom == 0) {
-        printErrorWithLangId(lang_id, "RegisterClassExW");
+        printErrorWithLangId(arena.allocator(), lang_id, "RegisterClassExW");
 
         return error.WindowInit;
     }
 
     hwnd = win32.CreateWindowExW(
-        0,
+        std.mem.zeroes(win32.WINDOW_EX_STYLE),
         class_name,
         window_name,
-        0,
+        std.mem.zeroes(win32.WINDOW_STYLE),
         0,
         0,
         0,
@@ -85,13 +88,13 @@ pub fn init(io: Io, arena: *Arena, clip_queue: *ClipQueue) !*Windows {
         hinst,
         null,
     ) orelse {
-        printErrorWithLangId(lang_id, "CreateWindowExW");
+        printErrorWithLangId(arena.allocator(), lang_id, "CreateWindowExW");
 
         return error.WindowInit;
     };
 
     if (win32.AddClipboardFormatListener(hwnd) == 0) {
-        printErrorWithLangId(lang_id, "AddClipboardFormatListener");
+        printErrorWithLangId(arena.allocator(), lang_id, "AddClipboardFormatListener");
 
         return error.ListenerFailed;
     }
@@ -110,44 +113,54 @@ pub fn init(io: Io, arena: *Arena, clip_queue: *ClipQueue) !*Windows {
     };
 
     lang_id_global = lang_id;
+    alloc_global = arena.allocator();
 
     return self;
 }
 
 pub fn deinit(self: *Windows) void {
-    win32.RemoveClipboardFormatListener(self.hwnd);
-    win32.DestroyWindow(self.hwnd);
+    _ = win32.RemoveClipboardFormatListener(self.hwnd);
+    _ = win32.DestroyWindow(self.hwnd);
 }
 
-fn printErrorWithLangId(lang_id: u32, fn_name: []const u8) void {
+pub fn setClipboard(_: *Windows, _: Clip) !void {
+    @panic("TODO");
+}
+
+fn printErrorWithLangId(allocator: Allocator, lang_id: u32, fn_name: []const u8) void {
     const err = win32.GetLastError();
     if (err == .NO_ERROR) return;
 
-    var buf: []u8 = undefined;
+    const buf: [*:0]u16 = undefined;
 
     const fmt_res = win32.FormatMessageW(
-        win32.FORMAT_MESSAGE_ALLOCATE_BUFFER | win32.FORMAT_MESSAGE_FROM_SYSTEM | win32.FORMAT_MESSAGE_IGNORE_INSERTS,
+        win32.FORMAT_MESSAGE_OPTIONS{ .ALLOCATE_BUFFER = 1, .FROM_SYSTEM = 1, .IGNORE_INSERTS = 1 },
         null,
-        err,
+        @intFromEnum(err),
         lang_id,
-        &buf,
+        buf,
         0,
         null,
     );
 
     if (fmt_res == 0) {
         log.err("{s} failed with error {t}", .{ fn_name, err });
-        log.err("FormatMessageW failed with error {t}", .{ fn_name, win32.GetLastError() });
+        log.err("FormatMessageW failed with error {t}", .{win32.GetLastError()});
         return;
     }
 
-    defer win32.LocalFree(buf.ptr);
+    defer _ = win32.LocalFree(@intCast(@intFromPtr(buf)));
 
-    log.err("{s} failed with error {t}: {s}", .{ err, buf });
+    const wtf8_str = std.unicode.wtf16LeToWtf8Alloc(allocator, buf[0..fmt_res]) catch return;
+    const utf8_str = std.unicode.wtf8ToUtf8LossyAlloc(allocator, wtf8_str) catch return;
+    defer allocator.free(wtf8_str);
+    defer allocator.free(utf8_str);
+
+    log.err("{s} failed with error {t}: {s}", .{ fn_name, err, utf8_str });
 }
 
 fn printError(self: *const Windows, fn_name: []const u8) void {
-    printErrorWithLangId(self.lang_id, fn_name);
+    printErrorWithLangId(self.arena.allocator(), self.lang_id, fn_name);
 }
 
 /// An event loop to get and send messages.
@@ -158,15 +171,14 @@ fn workerThread(self: *Windows) anyerror!void {
     while (ret != 0) {
         ret = win32.GetMessageW(&msg, null, 0, 0);
         if (ret == -1) {
-            const err = win32.GetLastError();
-            self.printError(err, "GetMessageW");
+            self.printError("GetMessageW");
 
             // For now just continue once the error is logged. TODO: Figure out what is fatal.
             continue;
         }
 
-        win32.TranslateMessage(&msg);
-        win32.DispatchMessage(&msg);
+        _ = win32.TranslateMessage(&msg);
+        _ = win32.DispatchMessageW(&msg);
     }
 }
 
@@ -174,7 +186,7 @@ fn windowProc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) callconv(.wi
     switch (msg) {
         WM_CLIPBOARDUPDATE => {
             if (win32.OpenClipboard(hwnd) == 0) {
-                printErrorWithLangId(lang_id_global, "OpenClipboard");
+                printErrorWithLangId(alloc_global, lang_id_global, "OpenClipboard");
                 log.err("Failed to open clipboard. Some data may be lost.", .{});
                 return 0;
             }
@@ -183,15 +195,15 @@ fn windowProc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) callconv(.wi
                 const err = win32.CloseClipboard();
                 if (err == 0) {
                     const last_err = win32.GetLastError();
-                    printErrorWithLangId(lang_id_global, "CloseClipboard");
+                    printErrorWithLangId(alloc_global, lang_id_global, "CloseClipboard");
 
                     if (last_err == .NO_ERROR) {} else {
-                        log.err("Failed to close clipboard with error {t}.", .{err});
+                        log.err("Failed to close clipboard.", .{});
                     }
                 }
             }
 
-            var fmt: win32.UINT = 0;
+            var fmt: u32 = 0;
             var fallback_text: bool = false;
 
             while (true) {
@@ -200,7 +212,7 @@ fn windowProc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) callconv(.wi
                 if (fmt == 0) {
                     const err = win32.GetLastError();
 
-                    printErrorWithLangId(lang_id_global, "EnumClipboardFormats");
+                    printErrorWithLangId(alloc_global, lang_id_global, "EnumClipboardFormats");
 
                     if (err != .NO_ERROR) {
                         log.err("EnumClipboardFormats failed. Got {t}. Falling back to text.", .{err});
