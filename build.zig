@@ -17,6 +17,7 @@ pub fn build(b: *std.Build) void {
     };
 
     var wayland: *std.Build.Module = undefined;
+    var windows: *std.Build.Module = undefined;
 
     if (platform == .wayland) {
         const scanner = Scanner.create(b, .{});
@@ -27,6 +28,9 @@ pub fn build(b: *std.Build) void {
         scanner.generate("ext_data_control_manager_v1", 1);
         scanner.generate("zwlr_data_control_manager_v1", 1);
         scanner.generate("wl_seat", 1);
+    } else if (platform == .windows) {
+        const windows_dep = b.dependency("win32", .{});
+        windows = windows_dep.module("win32");
     }
 
     const options = b.addOptions();
@@ -54,6 +58,9 @@ pub fn build(b: *std.Build) void {
         mod.linkSystemLibrary("wayland-client", .{
             .use_pkg_config = .force,
         });
+    } else if (platform == .windows) {
+        mod.addImport("win32", windows);
+        mod.linkSystemLibrary("User32", .{});
     }
 
     const clap = b.dependency("clap", .{});
