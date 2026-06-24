@@ -19,6 +19,7 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const zclip = @import("zclip");
 
 const Network = @import("Network.zig");
+const UnixSocket = @import("UnixSocket.zig");
 
 const Daemon = @This();
 
@@ -42,54 +43,6 @@ pub const Opts = struct {
     socket_path: []const u8,
     inet: Network.Config = .{},
 };
-
-fn acceptConnections(io: Io, server: *Io.net.Server, clipboard: *zclip.Clipboard) void {
-    var group = Io.Group.init;
-
-    defer group.cancel(io); // TODO: Send a Stop message and await instead.
-
-    while (true) {
-        const stream = server.accept(io) catch |err| {
-            switch (err) {
-                error.Canceled => {
-                    return;
-                },
-                else => {
-                    log.err("acceptConnections, error accepting connection: {t}", .{err});
-                    continue;
-                },
-            }
-        };
-
-        log.debug("Accepted UNIX socket connection", .{});
-
-        group.concurrent(io, handleConnection, .{ io, stream, clipboard }) catch unreachable;
-    }
-}
-
-const Command = struct {
-    content_length: u64,
-    command: CommandInner,
-
-    const CommandInner = union(enum) {
-        /// Client wants to manually post a clip to the Daemon.
-        PostClip: zclip.Clip,
-        /// Daemon recieved a clip from remote peer or this machine.
-        Clip: zclip.Clip,
-    };
-};
-
-/// A UNIX socket connection sends commands back and forth.
-///
-/// Commands are prefixed by their Content-Size, this does not include the Content-Size (u64) itself.
-/// Commands are all sent in network (big endian) byte ordering.
-fn handleConnection(io: Io, stream: Io.net.Stream, clipboard: *zclip.Clipboard) !void {
-    _ = io; // autofix
-    _ = stream; // autofix
-    _ = clipboard; // autofix
-    // clipboard.clips
-
-}
 
 pub fn init(io: Io, arena: *ArenaAllocator, opts: Opts) Daemon {
     return .{
@@ -130,7 +83,7 @@ pub fn start(self: *Daemon) !void {
     self.select_tasks = .init(self.io, &self.select_tasks_buf);
     defer self.select_tasks.?.cancelDiscard();
 
-    try self.select_tasks.?.concurrent(.unix, acceptConnections, .{
+    try self.select_tasks.?.concurrent(.unix, UnixSocket.acceptConnections, .{
         self.io,
         &self.server.?,
         self.clipboard.?,
