@@ -4,7 +4,7 @@ A tool to manage and sync your clipboard between devices.
 
 # TODOs
 
-- Access clipboard on Wayland and Windows.
+- Access clipboard on ~~Wayland~~ and Windows.
   - Works on Wayland.
 - Establish an encrypted connection between them. (Pairing)
   - Maybe use ed25519 or something like that.
