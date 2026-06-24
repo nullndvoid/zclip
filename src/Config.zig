@@ -20,6 +20,8 @@ const Allocator = std.mem.Allocator;
 const known = @import("known-folders");
 const toml = @import("toml");
 
+const Peer = @import("Network.zig").Peer;
+
 const BACKEND_ALLOC_LIMIT_DEFAULT = 1024 * 1024 * 512;
 const IS_DEBUG = @import("builtin").mode == .Debug;
 
@@ -38,10 +40,16 @@ pub fn deinit(self: *Config) void {
 /// automatically parse into a struct.
 pub const InnerConfig = struct {
     debugging: Debugging = .{},
+    net: Network = .{},
 
     /// Optional memory limit for the process excluding I/O (futures). More useful for Debugging.
     const Debugging = struct {
         memory_limit: ?usize = if (IS_DEBUG) BACKEND_ALLOC_LIMIT_DEFAULT else null,
+    };
+
+    const Network = struct {
+        /// A list of peers pubkeys, and their nicknames.
+        peers: ?[]Peer = null,
     };
 };
 
