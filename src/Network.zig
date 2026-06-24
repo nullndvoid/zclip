@@ -18,6 +18,11 @@ const Io = std.Io;
 const Arena = std.heap.ArenaAllocator;
 const Allocator = std.mem.Allocator;
 const Box = std.crypto.nacl.Box;
+const Ed25519 = std.crypto.sign.Ed25519;
+
+const Serde = @import("serde");
+
+const Packet = @import("network/Packet.zig");
 
 const log = std.log.scoped(.net);
 
@@ -26,6 +31,11 @@ arena: *Arena,
 server: Io.net.Server,
 tasks: Io.Group,
 start_task: Io.Future(void),
+/// Mapping from public keys to nicknames. If unexpected peers are found we can
+/// warn the user and drop the connection.
+peers: std.AutoHashMap(PublicKey, []const u8),
+/// A set of nicknames in the config.
+nicks: std.StringHashMap(void),
 
 const Network = @This();
 
@@ -33,9 +43,37 @@ pub const DEFAULT_NET_PORT = 48500;
 
 pub const Config = struct {
     bind_addr: Io.net.IpAddress = .{ .ip4 = .unspecified(DEFAULT_NET_PORT) },
+    peers: []Peer = &.{},
 };
 
+pub fn parseIp(ip: []const u8) !Io.net.IpAddress {
+    var addr = try Io.net.IpAddress.parseLiteral(ip);
+    if (addr.getPort() == 0) {
+        addr.setPort(DEFAULT_NET_PORT);
+    }
+
+    return addr;
+}
+
+/// Alloc is assumed to use an arena.
+fn collectPeers(peers: []const Peer, alloc: Allocator) !struct { hashmap: std.AutoHashMap(PublicKey, []const u8), set: std.StringHashMap(void) } {
+    var hashmap = std.AutoHashMap(PublicKey, []const u8).init(alloc);
+    var set = std.StringHashMap(void).init(alloc);
+
+    for (peers) |peer| {
+        try hashmap.put(peer.pubkey, peer.nickname);
+        try set.put(peer.nickname, {});
+    }
+
+    return .{
+        .hashmap = hashmap,
+        .set = set,
+    };
+}
+
 pub fn init(io: Io, arena: *Arena, config: Config) !Network {
+    const peers = try collectPeers(config.peers, arena.allocator());
+
     var allocating = Io.Writer.Allocating.init(arena.allocator());
     const writer = &allocating.writer;
     try config.bind_addr.format(writer);
@@ -55,6 +93,8 @@ pub fn init(io: Io, arena: *Arena, config: Config) !Network {
         .server = server,
         .tasks = .init,
         .start_task = undefined,
+        .nicks = peers.set,
+        .peers = peers.hashmap,
     };
 }
 
@@ -123,9 +163,23 @@ fn acceptConnections(self: *Network) void {
     }
 }
 
+pub const PublicKey = struct {
+    pubkey: [Box.public_length]u8,
+
+    pub const serde = .{
+        .with = .{
+            .pubkey = Serde.helpers.Base64,
+        },
+    };
+};
+
 pub const Peer = struct {
     /// NaCl Box public key. Should be 32 bytes in length.
-    pubkey: []const u8,
+    pubkey: PublicKey,
     /// A nickname for the remote peer.
     nickname: []const u8,
+
+    pub const serde = .{
+        .flatten = &[_][]const u8{"pubkey"},
+    };
 };
