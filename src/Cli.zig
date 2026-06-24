@@ -287,5 +287,5 @@ pub const CliOpts = struct {
     /// True when help or usage was printed etc.
     should_exit: bool = false,
     /// The bind address to bind the Daemon to.
-    bind_addr: ?Io.net.IpAddress = .{ .ip4 = .unspecified(Network.DEFAULT_NET_PORT) },
+    bind_addr: ?Io.net.IpAddress = null,
 };

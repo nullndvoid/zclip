@@ -77,8 +77,21 @@ pub const InnerConfig = struct {
             }
         };
 
+        pub fn parseIp(self: Network) !?Io.net.IpAddress {
+            if (self.daemon_bind_address == null) return null;
+
+            var ip_addr = try Io.net.IpAddress.parseLiteral(self.daemon_bind_address.?);
+            if (ip_addr.getPort() == 0) {
+                ip_addr.setPort(@import("Network.zig").DEFAULT_NET_PORT);
+            }
+
+            return ip_addr;
+        }
+
         /// A list of peers pubkeys, and their nicknames.
         peers: ?[]Peer = null,
+        /// The address to bind the daemon to.
+        daemon_bind_address: ?[]const u8 = null,
     };
 };
 

@@ -92,6 +92,13 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             const socket_path = cli_args.socket_path orelse try getSocketPath(arena.allocator(), minimal.environ);
 
             var inet_cfg = Network.Config{};
+            if (cfg.net.daemon_bind_address) |_| {
+                const maybe_ip = try cfg.net.parseIp();
+                if (maybe_ip) |ip| {
+                    inet_cfg.bind_addr = ip;
+                }
+            }
+
             if (cli_args.bind_addr) |addr| {
                 inet_cfg.bind_addr = addr;
             }
