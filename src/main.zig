@@ -99,8 +99,13 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         },
     }
 
-    var await_buf: [2]TaskResult = undefined;
-    _ = try select.awaitMany(&await_buf, 2);
+    const res = try select.await();
+    switch (res) {
+        .daemon => |result| result catch |err| {
+            log.err("daemon exited with error: {t}", .{err});
+        },
+        else => {},
+    }
 }
 
 /// TODO: Support Windows. Caller is responsible for freeing returned memory.
@@ -123,7 +128,9 @@ const waitForInterrupt = switch (@import("builtin").os.tag) {
     else => @compileError("TODO"),
 };
 
-fn waitForInterruptWin32() std.Io.Cancelable!void {}
+fn waitForInterruptWin32() std.Io.Cancelable!void {
+    @panic("TODO");
+}
 
 fn waitForInterruptPosix() std.Io.Cancelable!void {
     const action: std.posix.Sigaction = .{
