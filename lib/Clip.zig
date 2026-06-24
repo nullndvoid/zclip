@@ -25,5 +25,5 @@ mime_type: [:0]const u8,
 /// Set if the clipping is text. Not assumed UTF-8 although this check could be added later.
 is_text: bool,
 
-/// Used by the `Clipboard` manager.
-node: std.DoublyLinkedList.Node = .{},
+/// Set to 0 if system local, else the originating daemon ID > 0.
+origin_id: u64 = 0,
