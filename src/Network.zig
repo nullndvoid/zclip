@@ -17,7 +17,7 @@ const std = @import("std");
 const Io = std.Io;
 const Arena = std.heap.ArenaAllocator;
 const Allocator = std.mem.Allocator;
-const Ed25519 = std.crypto.sign.Ed25519;
+const Box = std.crypto.nacl.Box;
 
 io: Io,
 arena: Arena,
@@ -35,7 +35,7 @@ pub fn init(io: Io, arena: Arena) !*Network {
 }
 
 pub const Peer = struct {
-    /// Ed25519 public key. Should be 32 bytes in length once base 64 decoded.
+    /// NaCl Box public key. Should be 32 bytes in length.
     pubkey: []const u8,
     /// A nickname for the remote peer.
     nickname: []const u8,
