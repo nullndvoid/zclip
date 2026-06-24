@@ -103,6 +103,12 @@ pub fn init(io: Io, arena: *ArenaAllocator, opts: Opts) Daemon {
     };
 }
 
+fn clipCallback(clip: *zclip.Clip, _: *void) anyerror!void {
+    if (!clip.is_text) return;
+
+    log.debug("Got clip {s}", .{clip.data});
+}
+
 /// Starts the daemon worker, blocking. May be cancelled by a signal. See signal handling in `main.zig`.
 ///
 /// TODO: Make this select between internet stuff and unix socket stuff.
@@ -112,6 +118,9 @@ pub fn start(self: *Daemon) !void {
         self.arena,
         self.opts.clipboard,
     );
+
+    self.clipboard.?.setOnClip(void, clipCallback, @constCast(&{}));
+
     var addr = try Io.net.UnixAddress.init(self.opts.socket_path);
     self.server = try addr.listen(self.io, .{});
 
