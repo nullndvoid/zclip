@@ -25,6 +25,7 @@ const Command = Clipboard.Command;
 const Cli = @import("Cli.zig");
 const Config = @import("Config.zig");
 const Daemon = @import("Daemon.zig");
+const Network = @import("Network.zig");
 
 // const Client = @import("Client.zig");
 
@@ -90,10 +91,16 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         .Daemon => {
             const socket_path = cli_args.socket_path orelse try getSocketPath(arena.allocator(), minimal.environ);
 
+            var inet_cfg = Network.Config{};
+            if (cli_args.bind_addr) |addr| {
+                inet_cfg.bind_addr = addr;
+            }
+
             try select.concurrent(.daemon, runDaemon, .{
                 &arena,
-                .{
+                Daemon.Opts{
                     .socket_path = socket_path,
+                    .inet = inet_cfg,
                 },
             });
         },

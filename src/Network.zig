@@ -29,7 +29,7 @@ start_task: Io.Future(void),
 
 const Network = @This();
 
-const DEFAULT_NET_PORT = 48500;
+pub const DEFAULT_NET_PORT = 48500;
 
 pub const Config = struct {
     bind_addr: Io.net.IpAddress = .{ .ip4 = .unspecified(DEFAULT_NET_PORT) },
