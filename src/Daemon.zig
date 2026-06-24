@@ -18,12 +18,14 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 
 const zclip = @import("zclip");
 
+const Network = @import("Network.zig");
+
 const Daemon = @This();
 
 opts: Opts,
 arena: *ArenaAllocator,
 io: Io,
-clipboard: ?zclip.Clipboard,
+clipboard: ?*zclip.Clipboard,
 server: ?Io.net.Server,
 select_tasks: ?Io.Select(TaskResults),
 select_tasks_buf: [1]TaskResults,
@@ -41,7 +43,7 @@ pub const Opts = struct {
     socket_path: []const u8,
 };
 
-fn acceptConnections(io: Io, server: *Io.net.Server) void {
+fn acceptConnections(io: Io, server: *Io.net.Server, clipboard: *zclip.Clipboard) void {
     var group = Io.Group.init;
 
     defer group.cancel(io); // TODO: Send a Stop message and await instead.
@@ -61,13 +63,32 @@ fn acceptConnections(io: Io, server: *Io.net.Server) void {
 
         log.debug("Accepted UNIX socket connection", .{});
 
-        group.concurrent(io, handleConnection, .{ io, stream }) catch unreachable;
+        group.concurrent(io, handleConnection, .{ io, stream, clipboard }) catch unreachable;
     }
 }
 
-fn handleConnection(io: Io, stream: Io.net.Stream) !void {
+const Command = struct {
+    content_length: u64,
+    command: CommandInner,
+
+    const CommandInner = union(enum) {
+        /// Client wants to manually post a clip to the Daemon.
+        PostClip: zclip.Clip,
+        /// Daemon recieved a clip from remote peer or this machine.
+        Clip: zclip.Clip,
+    };
+};
+
+/// A UNIX socket connection sends commands back and forth.
+///
+/// Commands are prefixed by their Content-Size, this does not include the Content-Size (u64) itself.
+/// Commands are all sent in network (big endian) byte ordering.
+fn handleConnection(io: Io, stream: Io.net.Stream, clipboard: *zclip.Clipboard) !void {
     _ = io; // autofix
     _ = stream; // autofix
+    _ = clipboard; // autofix
+    // clipboard.clips
+
 }
 
 pub fn init(io: Io, arena: *ArenaAllocator, opts: Opts) Daemon {
@@ -96,7 +117,11 @@ pub fn start(self: *Daemon) !void {
 
     self.select_tasks = .init(self.io, &self.select_tasks_buf);
 
-    try self.select_tasks.?.concurrent(.unix, acceptConnections, .{ self.io, &self.server.? });
+    try self.select_tasks.?.concurrent(.unix, acceptConnections, .{
+        self.io,
+        &self.server.?,
+        self.clipboard.?,
+    });
 
     _ = self.select_tasks.?.await() catch return;
 }
@@ -109,8 +134,16 @@ pub fn deinit(self: *Daemon) void {
     if (self.server) |*server| {
         server.deinit(self.io);
         self.server = null;
+
+        const path = self.arena.allocator().dupeSentinel(u8, self.opts.socket_path, 0) catch unreachable;
+        defer self.arena.allocator().free(path);
+        if (@import("builtin").os.tag != .windows) {
+            if (std.c.unlink(path) == -1) {
+                log.err("Failed to unlink socket file! Please delete it manually at {s}", .{self.opts.socket_path});
+            }
+        }
     }
-    if (self.clipboard) |*clipboard| {
+    if (self.clipboard) |clipboard| {
         clipboard.deinit();
         self.clipboard = null;
     }
