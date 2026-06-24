@@ -16,11 +16,10 @@
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
+const Base64 = std.base64.standard;
 
 const known = @import("known-folders");
 const toml = @import("toml");
-
-const Peer = @import("Network.zig").Peer;
 
 const BACKEND_ALLOC_LIMIT_DEFAULT = 1024 * 1024 * 512;
 const IS_DEBUG = @import("builtin").mode == .Debug;
@@ -48,6 +47,36 @@ pub const InnerConfig = struct {
     };
 
     const Network = struct {
+        pub const Peer = struct {
+            /// NaCl Box public key. Should be 32 bytes in length once base 64 decoded.
+            pubkey: []const u8,
+            /// A nickname for the remote peer.
+            nickname: []const u8,
+
+            const Box = std.crypto.nacl.Box;
+
+            /// Caller should free allocated slice.
+            pub fn pubKey(self: *const Peer, alloc: Allocator) ![]u8 {
+                const len = try Base64.Decoder.calcSizeForSlice(self.pubkey);
+                if (len != Box.public_length) return error.InvalidInputLen;
+
+                var buf = try alloc.alloc(u8, len);
+                errdefer alloc.free(buf);
+
+                try Base64.Decoder.decode(&buf, self.pubkey);
+
+                return buf;
+            }
+
+            /// Caller should free allocated slice.
+            pub fn encodePubKey(pubkey: [Box.public_length]u8, alloc: Allocator) ![]u8 {
+                const len = Base64.Encoder.calcSize(pubkey.len);
+                var buf = try alloc.alloc(u8, len);
+
+                return Base64.Encoder.encode(&buf, pubkey);
+            }
+        };
+
         /// A list of peers pubkeys, and their nicknames.
         peers: ?[]Peer = null,
     };
