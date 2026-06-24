@@ -26,14 +26,17 @@ const ClipQueue = zclip.ClipQueue;
 const log = std.log.scoped(.Clipboard);
 
 backend: *Backend,
-clips: ?Clip = null,
+clips: std.ArrayList(Clip),
 /// Used to send commands to the worker task.
 commands_in: *CommandQueue,
-
 /// The worker thread.
 worker: Io.Future(anyerror!void),
-
 io: Io,
+/// Clipboard callback. Users could also inspect the arraylist but this
+/// provides a way to be notified immediately.
+on_clipboard: ?*const fn (clip: *Clip, userdata: *anyopaque) anyerror!void,
+/// Passed into on_clipboard.
+userdata: ?*anyopaque,
 
 pub const Command = union(enum) {
     /// Client requests the thread to stop.
@@ -46,10 +49,6 @@ pub const Command = union(enum) {
     ///
     /// We are not likely to need a large buffer for `commands_in`.
     WriteClipboard: Clip,
-    /// Worker thread sends new clips from system and network to the client.
-    ///
-    /// TODO: Maybe we should make a separate command for network reads? like: (Network: Packet)
-    Clip: Clip,
 };
 
 const CommandQueue = Io.Queue(Command);
@@ -84,7 +83,36 @@ fn pollInCommands(ctx: *WorkerContext, buf: []Command) anyerror!void {
             .WriteClipboard => |clip| {
                 try ctx.backend.setClipboard(clip);
             },
-            else => return error.InvalidCommand,
+            // else => return error.InvalidCommand,
+        }
+    }
+}
+
+pub fn setOnClip(self: *Clipboard, comptime T: type, comptime callback: fn (clip: *Clip, userdata: *T) anyerror!void, userdata: *T) void {
+    self.on_clipboard = @ptrCast(@alignCast(&callback));
+    self.userdata = @ptrCast(userdata);
+}
+
+/// Adds clips to the array list and calls the callback.
+fn addClips(self: *Clipboard, allocator: Allocator, clips: []Clip) anyerror!void {
+    for (clips) |clip| {
+        const clip_data = try allocator.dupe(u8, clip.data);
+        const mime_type = try allocator.dupeSentinel(u8, clip.mime_type, 0);
+        errdefer {
+            allocator.free(clip_data);
+            allocator.free(mime_type);
+        }
+
+        try self.clips.append(allocator, .{
+            .data = clip_data,
+            .mime_type = mime_type,
+            .is_text = clip.is_text,
+        });
+
+        if (self.on_clipboard) |cb| {
+            cb(&self.clips.items[self.clips.items.len - 1], self.userdata.?) catch |err| {
+                log.err("on_clip returned error: {t}", .{err});
+            };
         }
     }
 }
@@ -98,7 +126,7 @@ fn pollInCommands(ctx: *WorkerContext, buf: []Command) anyerror!void {
 /// # TODO:
 ///
 /// Poll the network.
-fn workerFn(ctx: *WorkerContext) anyerror!void {
+fn workerFn(self: *Clipboard, ctx: *WorkerContext) anyerror!void {
     // Prealloc some buffers for the queue reads.
     const clip_queue_buf = try ctx.alloc.alloc(Clip, ctx.clip_queue.queue.capacity());
     defer ctx.alloc.free(clip_queue_buf);
@@ -131,29 +159,13 @@ fn workerFn(ctx: *WorkerContext) anyerror!void {
             clips[idx] = clip;
         }
 
-        // Now write the read clips. We can poll in commands whilst waiting instead of blocking with putAll.
-        var written: usize = 0;
-        while (written < clips_read) {
-            clips = clips[written..clips_read];
-            written += try ctx.clip_queue.queue.put(ctx.io, clips, 0);
-
-            pollInCommands(ctx, commands_in_buf) catch |err| switch (err) {
-                error.Stop => return,
-                else => return err,
-            };
-        }
+        addClips(self, ctx.alloc, clips) catch |err| {
+            log.err("addClips failed with error {t}", .{err});
+        };
     }
 }
 
-/// Need to make a worker thread that takes commands over a channel, reads from network* and clipboard, and displays them.
-///
-/// # Notes
-///
-/// Networking not implemented yet.
-///
-/// For now we can just have a list of clippings rendered and a simple TUI? Or start writing a GUI but I would like this
-/// to be able to run in the CLI as well, or some sort of daemon.
-pub fn init(io: Io, arena: *ArenaAllocator, config: Config) !Clipboard {
+pub fn init(io: Io, arena: *ArenaAllocator, config: Config) !*Clipboard {
     const read_clip_queue = try arena.allocator().create(ClipQueue);
     read_clip_queue.* = try zclip.ClipQueue.init(
         io,
@@ -172,6 +184,17 @@ pub fn init(io: Io, arena: *ArenaAllocator, config: Config) !Clipboard {
 
     commands_in.* = CommandQueue.init(commands_in_buf);
 
+    const self = try arena.allocator().create(Clipboard);
+    self.* = .{
+        .io = io,
+        .backend = backend,
+        .commands_in = commands_in,
+        .worker = undefined,
+        .clips = std.ArrayList(Clip).empty,
+        .on_clipboard = null,
+        .userdata = null,
+    };
+
     const worker_ctx = try arena.allocator().create(WorkerContext);
     worker_ctx.* = .{
         .in = commands_in,
@@ -181,12 +204,9 @@ pub fn init(io: Io, arena: *ArenaAllocator, config: Config) !Clipboard {
         .backend = backend,
     };
 
-    return .{
-        .io = io,
-        .backend = backend,
-        .commands_in = commands_in,
-        .worker = try io.concurrent(workerFn, .{worker_ctx}),
-    };
+    self.worker = try io.concurrent(workerFn, .{ self, worker_ctx });
+
+    return self;
 }
 
 /// Stops the running backend and worker thread.
