@@ -112,6 +112,11 @@ pub fn setupAndParseArgs(io: Io, arena: *ArenaAllocator, args: std.process.Args,
         },
         .daemon => {
             opts.mode = .Daemon;
+
+            if (try parseDaemonArgs(io, alloc, &iter, res, opts, writer)) {
+                opts.should_exit = true;
+                return;
+            }
         },
     }
 }
@@ -136,6 +141,37 @@ fn parseClientArgs(io: Io, alloc: Allocator, iter: *std.process.Args.Iterator, _
 
     if (res.args.help != 0) {
         try printHelp(writer, client_params[0..], .{ .subcommand = "client" });
+
+        return true;
+    }
+
+    if (res.args.@"socket-addr") |addr| {
+        opts.socket_path = try alloc.dupe(u8, addr);
+    }
+
+    return false;
+}
+
+/// Returns true if should quit.
+fn parseDaemonArgs(io: Io, alloc: Allocator, iter: *std.process.Args.Iterator, _: MainArgs, opts: *CliOpts, writer: *Io.Writer) !bool {
+    const daemon_params = comptime clap.parseParamsComptime(
+        \\ -h, --help               Display this help menu.
+        \\ --socket-addr <str>      Use a different socket address for the daemon.
+    );
+
+    var diag = clap.Diagnostic{};
+    var res = clap.parseEx(clap.Help, &daemon_params, clap.parsers.default, iter, .{
+        .diagnostic = &diag,
+        .allocator = alloc,
+    }) catch |err| {
+        try diag.reportToFile(io, .stderr(), err);
+        return err;
+    };
+
+    defer res.deinit();
+
+    if (res.args.help != 0) {
+        try printHelp(writer, daemon_params[0..], .{ .subcommand = "daemon" });
 
         return true;
     }
