@@ -32,7 +32,7 @@ select_tasks_buf: [2]TaskResults,
 
 const TaskResults = union(enum) {
     unix: void,
-    inet: anyerror!void,
+    inet: void,
 };
 
 const log = std.log.scoped(.Daemon);
@@ -144,7 +144,7 @@ pub fn start(self: *Daemon) !void {
         self.opts.inet.bind_addr.getPort(),
     });
 
-    _ = self.select_tasks.?.await() catch return;
+    _ = try self.select_tasks.?.await();
 }
 
 pub fn deinit(self: *Daemon) void {
