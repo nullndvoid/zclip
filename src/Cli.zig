@@ -20,6 +20,8 @@ const build_options = @import("options");
 const clap = @import("clap");
 const zclip = @import("zclip");
 
+const Network = @import("Network.zig");
+
 const SubCommands = enum {
     /// Client is default for ergonomics, since the daemon can be started as a service.
     client,
@@ -152,15 +154,47 @@ fn parseClientArgs(io: Io, alloc: Allocator, iter: *std.process.Args.Iterator, _
     return false;
 }
 
+fn parseAddr() fn ([]const u8) Io.net.IpAddress.ParseLiteralError!Io.net.IpAddress {
+    return struct {
+        pub fn parse(addr: []const u8) !Io.net.IpAddress {
+            var ip_addr = try Io.net.IpAddress.parseLiteral(addr);
+            if (ip_addr.getPort() == 0) {
+                ip_addr.setPort(Network.DEFAULT_NET_PORT);
+            }
+
+            return ip_addr;
+        }
+    }.parse;
+}
+
 /// Returns true if should quit.
 fn parseDaemonArgs(io: Io, alloc: Allocator, iter: *std.process.Args.Iterator, _: MainArgs, opts: *CliOpts, writer: *Io.Writer) !bool {
+    const parsers = .{
+        .string = clap.parsers.string,
+        .str = clap.parsers.string,
+        .u8 = clap.parsers.int(u8, 0),
+        .u16 = clap.parsers.int(u16, 0),
+        .u32 = clap.parsers.int(u32, 0),
+        .u64 = clap.parsers.int(u64, 0),
+        .usize = clap.parsers.int(usize, 0),
+        .i8 = clap.parsers.int(i8, 0),
+        .i16 = clap.parsers.int(i16, 0),
+        .i32 = clap.parsers.int(i32, 0),
+        .i64 = clap.parsers.int(i64, 0),
+        .isize = clap.parsers.int(isize, 0),
+        .f32 = clap.parsers.float(f32),
+        .f64 = clap.parsers.float(f64),
+        .addr = parseAddr(),
+    };
+
     const daemon_params = comptime clap.parseParamsComptime(
         \\ -h, --help               Display this help menu.
         \\ --socket-addr <str>      Use a different socket address for the daemon.
+        \\ -b,--bind-addr <addr>    The address:port to bind the daemon to. Defaults to 0.0.0.0:48500.
     );
 
     var diag = clap.Diagnostic{};
-    var res = clap.parseEx(clap.Help, &daemon_params, clap.parsers.default, iter, .{
+    var res = clap.parseEx(clap.Help, &daemon_params, &parsers, iter, .{
         .diagnostic = &diag,
         .allocator = alloc,
     }) catch |err| {
@@ -178,6 +212,10 @@ fn parseDaemonArgs(io: Io, alloc: Allocator, iter: *std.process.Args.Iterator, _
 
     if (res.args.@"socket-addr") |addr| {
         opts.socket_path = try alloc.dupe(u8, addr);
+    }
+
+    if (res.args.@"bind-addr") |addr| {
+        opts.bind_addr = addr;
     }
 
     return false;
@@ -248,4 +286,6 @@ pub const CliOpts = struct {
     socket_path: ?[]const u8 = null,
     /// True when help or usage was printed etc.
     should_exit: bool = false,
+    /// The bind address to bind the Daemon to.
+    bind_addr: ?Io.net.IpAddress = .{ .ip4 = .unspecified(Network.DEFAULT_NET_PORT) },
 };
