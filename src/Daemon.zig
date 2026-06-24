@@ -28,11 +28,10 @@ io: Io,
 clipboard: ?*zclip.Clipboard,
 server: ?Io.net.Server,
 select_tasks: ?Io.Select(TaskResults),
-select_tasks_buf: [1]TaskResults,
+select_tasks_buf: [2]TaskResults,
 
 const TaskResults = union(enum) {
     unix: void,
-    // Does not matter yet.
     inet: anyerror!void,
 };
 
@@ -41,6 +40,7 @@ const log = std.log.scoped(.Daemon);
 pub const Opts = struct {
     clipboard: zclip.Clipboard.Config = .{},
     socket_path: []const u8,
+    inet: Network.Config = .{},
 };
 
 fn acceptConnections(io: Io, server: *Io.net.Server, clipboard: *zclip.Clipboard) void {
@@ -124,12 +124,24 @@ pub fn start(self: *Daemon) !void {
     var addr = try Io.net.UnixAddress.init(self.opts.socket_path);
     self.server = try addr.listen(self.io, .{});
 
+    var net = try Network.init(self.io, self.arena, self.opts.inet);
+    defer net.deinit();
+
     self.select_tasks = .init(self.io, &self.select_tasks_buf);
+    defer self.select_tasks.?.cancelDiscard();
 
     try self.select_tasks.?.concurrent(.unix, acceptConnections, .{
         self.io,
         &self.server.?,
         self.clipboard.?,
+    });
+
+    try self.select_tasks.?.concurrent(.inet, Network.start, .{
+        &net,
+    });
+
+    log.info("Listening on UNIX socket and TCP :{d}.", .{
+        self.opts.inet.bind_addr.getPort(),
     });
 
     _ = self.select_tasks.?.await() catch return;
