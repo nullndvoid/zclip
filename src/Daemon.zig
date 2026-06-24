@@ -63,8 +63,6 @@ fn clipCallback(clip: *zclip.Clip, _: *void) anyerror!void {
 }
 
 /// Starts the daemon worker, blocking. May be cancelled by a signal. See signal handling in `main.zig`.
-///
-/// TODO: Make this select between internet stuff and unix socket stuff.
 pub fn start(self: *Daemon) !void {
     self.clipboard = try zclip.Clipboard.init(
         self.io,
