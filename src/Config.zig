@@ -11,7 +11,7 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 // GNU General Public License for more details.
 
-//! Configuration for zclip.
+//! Configuration for zclip. Pass an arena allocator in to manage lifetimes for you.
 
 const std = @import("std");
 const Io = std.Io;
@@ -19,7 +19,9 @@ const Allocator = std.mem.Allocator;
 const Base64 = std.base64.standard;
 
 const known = @import("known-folders");
-const toml = @import("toml");
+const Serde = @import("serde");
+
+const Network = @import("Network.zig");
 
 const BACKEND_ALLOC_LIMIT_DEFAULT = 1024 * 1024 * 512;
 const IS_DEBUG = @import("builtin").mode == .Debug;
@@ -28,99 +30,38 @@ const log = std.log.scoped(.config);
 
 const Config = @This();
 
-parsed: toml.Parsed(InnerConfig),
 data: InnerConfig,
 
 pub fn deinit(self: *Config) void {
-    self.parsed.deinit();
+    _ = self; // autofix
 }
 
 /// Wrapped in Config because we want to manage the lifetimes of data allocated but
 /// automatically parse into a struct.
 pub const InnerConfig = struct {
-    debugging: Debugging = .{},
-    net: Network = .{},
+    debugging: DebuggingSection = .{},
+    net: NetworkSection = .{},
 
     /// Optional memory limit for the process excluding I/O (futures). More useful for Debugging.
-    const Debugging = struct {
+    const DebuggingSection = struct {
         memory_limit: ?usize = if (IS_DEBUG) BACKEND_ALLOC_LIMIT_DEFAULT else null,
     };
 
-    const Network = struct {
-        pub const Peer = struct {
-            /// NaCl Box public key. Should be 32 bytes in length once base 64 decoded.
-            pubkey: []const u8,
-            /// A nickname for the remote peer.
-            nickname: []const u8,
-
-            const Box = std.crypto.nacl.Box;
-
-            /// Caller should free allocated slice.
-            pub fn pubKey(self: *const Peer, alloc: Allocator) ![]u8 {
-                const len = try Base64.Decoder.calcSizeForSlice(self.pubkey);
-                if (len != Box.public_length) return error.InvalidInputLen;
-
-                var buf = try alloc.alloc(u8, len);
-                errdefer alloc.free(buf);
-
-                try Base64.Decoder.decode(&buf, self.pubkey);
-
-                return buf;
-            }
-
-            /// Caller should free allocated slice.
-            pub fn encodePubKey(pubkey: [Box.public_length]u8, alloc: Allocator) ![]u8 {
-                const len = Base64.Encoder.calcSize(pubkey.len);
-                var buf = try alloc.alloc(u8, len);
-
-                return Base64.Encoder.encode(&buf, pubkey);
-            }
-        };
-
-        pub fn parseIp(self: Network) !?Io.net.IpAddress {
-            if (self.daemon_bind_address == null) return null;
-
-            var ip_addr = try Io.net.IpAddress.parseLiteral(self.daemon_bind_address.?);
-            if (ip_addr.getPort() == 0) {
-                ip_addr.setPort(@import("Network.zig").DEFAULT_NET_PORT);
-            }
-
-            return ip_addr;
-        }
-
+    const NetworkSection = struct {
         /// A list of peers pubkeys, and their nicknames.
-        peers: ?[]Peer = null,
+        peers: ?[]Network.Peer = null,
         /// The address to bind the daemon to.
         daemon_bind_address: ?[]const u8 = null,
     };
 };
 
 fn parseSlice(allocator: Allocator, data: []const u8, filename: []const u8) !Config {
-    var parser = toml.Parser(InnerConfig).init(allocator);
-    defer parser.deinit();
-
-    const parsed = parser.parseString(data) catch |err| {
-        const info = parser.error_info orelse return err;
-
-        switch (info) {
-            .parse => |pos| {
-                log.err("TOML parse error in {s} ({d}:{d})", .{ filename, pos.line, pos.pos });
-            },
-            .struct_mapping => |mapping| {
-                log.err("TOML error mapping input to config struct. More info below:", .{});
-                for (mapping) |map| {
-                    log.err("Missing field/table: {s}. See README for information on configuring zclip.", .{map});
-                }
-            },
-        }
-
+    const cfg = Serde.toml.fromSlice(InnerConfig, allocator, data) catch |err| {
+        log.err("Error parsing config at {s}: {t}", .{ filename, err });
         return err;
     };
 
-    return .{
-        .data = parsed.value,
-        .parsed = parsed,
-    };
+    return .{ .data = cfg };
 }
 
 pub fn fromPath(io: Io, allocator: Allocator, absolute_path: []const u8) !Config {
