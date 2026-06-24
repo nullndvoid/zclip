@@ -25,7 +25,7 @@ io: Io,
 arena: *Arena,
 server: Io.net.Server,
 tasks: Io.Group,
-start_task: Io.Future(anyerror!void),
+start_task: Io.Future(void),
 
 const Network = @This();
 
@@ -38,7 +38,7 @@ pub const Config = struct {
 pub fn init(io: Io, arena: *Arena, config: Config) !Network {
     var allocating = Io.Writer.Allocating.init(arena.allocator());
     const writer = &allocating.writer;
-    try config.bind_addr.format(&writer);
+    try config.bind_addr.format(writer);
 
     const ip = try allocating.toOwnedSlice();
     errdefer arena.allocator().free(ip);
@@ -59,29 +59,28 @@ pub fn init(io: Io, arena: *Arena, config: Config) !Network {
 }
 
 /// Starts the Network workers. Blocking. May be cancelled as required.
-pub fn start(self: *Network) anyerror!void {
-    self.start_task = try self.io.concurrent(acceptConnections, .{self});
+pub fn start(self: *Network) void {
+    self.start_task = self.io.concurrent(acceptConnections, .{self}) catch unreachable;
     log.debug("Started accepting connections", .{});
     _ = self.start_task.await(self.io);
     log.debug("No longer accepting connections", .{});
 }
 
-pub fn deinit(self: Network) void {
+pub fn deinit(self: *Network) void {
     self.tasks.cancel(self.io);
     self.start_task.await(self.io);
     self.server.deinit(self.io);
 }
 
-fn handleConnectionRw(self: *Network, rdr: *Io.Reader, writer: *Io.Writer) anyerror!void {
+fn handleConnectionRw(self: *Network, rdr: *Io.Reader, writer: *Io.Writer) void {
     _ = self; // autofix
     _ = rdr; // autofix
     log.err("TODO!", .{});
-    try writer.write("NOT YET IMPLEMENTED");
+    _ = writer.write("NOT YET IMPLEMENTED") catch {};
+    writer.flush() catch {};
 }
 
-fn handleConnection(self: *Network, stream: Io.net.Stream) anyerror!void {
-    defer stream.shutdown(self.io, .both);
-
+fn handleConnection(self: *Network, stream: Io.net.Stream) void {
     var read_buf: [4096]u8 = undefined;
     var write_buf: [4096]u8 = undefined;
 
@@ -91,11 +90,20 @@ fn handleConnection(self: *Network, stream: Io.net.Stream) anyerror!void {
     const rdr = &sock_rdr.interface;
     const writer = &sock_writer.interface;
 
-    const future = try self.io.concurrent(handleConnectionRw, .{ self, rdr, writer });
+    var future = self.io.concurrent(handleConnectionRw, .{ self, rdr, writer }) catch unreachable;
     _ = future.await(self.io);
+
+    stream.shutdown(self.io, .both) catch |err| {
+        switch (err) {
+            error.Canceled => return,
+            else => {},
+        }
+
+        log.err("Failed to shutdown TCP stream. Reason: {t}", .{err});
+    };
 }
 
-fn acceptConnections(self: *Network) anyerror!void {
+fn acceptConnections(self: *Network) void {
     defer self.tasks.cancel(self.io);
 
     while (true) {
@@ -111,7 +119,7 @@ fn acceptConnections(self: *Network) anyerror!void {
 
         log.debug("Accepted inet connection from peer", .{});
 
-        self.tasks.concurrent(self.io, handleConnection, .{ self, stream });
+        self.tasks.concurrent(self.io, handleConnection, .{ self, stream }) catch unreachable;
     }
 }
 
