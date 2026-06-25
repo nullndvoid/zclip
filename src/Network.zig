@@ -19,12 +19,15 @@ const Arena = std.heap.ArenaAllocator;
 const Allocator = std.mem.Allocator;
 const Box = std.crypto.nacl.Box;
 const Ed25519 = std.crypto.sign.Ed25519;
+const b64 = std.base64.standard;
 
 const Serde = @import("serde");
 
 const Packet = @import("network/Packet.zig");
 
 const log = std.log.scoped(.net);
+
+const PeerMap = std.StringHashMap([]const u8);
 
 io: Io,
 arena: *Arena,
@@ -33,7 +36,7 @@ tasks: Io.Group,
 start_task: Io.Future(void),
 /// Mapping from public keys to nicknames. If unexpected peers are found we can
 /// warn the user and drop the connection.
-peers: std.AutoHashMap(PublicKey, []const u8),
+peers: PeerMap,
 /// A set of nicknames in the config.
 nicks: std.StringHashMap(void),
 
@@ -56,8 +59,8 @@ pub fn parseIp(ip: []const u8) !Io.net.IpAddress {
 }
 
 /// Alloc is assumed to use an arena.
-fn collectPeers(peers: []const Peer, alloc: Allocator) !struct { hashmap: std.AutoHashMap(PublicKey, []const u8), set: std.StringHashMap(void) } {
-    var hashmap = std.AutoHashMap(PublicKey, []const u8).init(alloc);
+fn collectPeers(peers: []const Peer, alloc: Allocator) !struct { hashmap: PeerMap, set: std.StringHashMap(void) } {
+    var hashmap = PeerMap.initContext(alloc, .{});
     var set = std.StringHashMap(void).init(alloc);
 
     for (peers) |peer| {
@@ -163,23 +166,19 @@ fn acceptConnections(self: *Network) void {
     }
 }
 
-pub const PublicKey = struct {
-    pubkey: [Box.public_length]u8,
-
-    pub const serde = .{
-        .with = .{
-            .pubkey = Serde.helpers.Base64,
-        },
-    };
-};
-
 pub const Peer = struct {
     /// NaCl Box public key. Should be 32 bytes in length.
-    pubkey: PublicKey,
+    pubkey: []const u8,
+
     /// A nickname for the remote peer.
     nickname: []const u8,
 
-    pub const serde = .{
-        .flatten = &[_][]const u8{"pubkey"},
-    };
+    fixed: bool = false,
+
+    pub fn fix(self: *Peer) !void {
+        if (self.fixed) return;
+        b64.Decoder.calcSizeUpperBound(self.pubkey);
+
+        self.fixed = true;
+    }
 };

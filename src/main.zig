@@ -98,6 +98,9 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             }
 
             if (cfg.net.peers) |peers| {
+                for (peers) |peer| {
+                    log.debug("Got peer: {s}, PK: {s}", .{ peer.nickname, peer.pubkey });
+                }
                 inet_cfg.peers = peers;
             }
 

@@ -49,8 +49,8 @@
             .hash = "win32-25.0.28-preview-mX5pFWMt5QPTVIGh3r2-OpPunpcCCjApyRbA6Zn6WALH",
         },
         .serde = .{
-            .url = "https://github.com/OrlovEvgeny/serde.zig/archive/refs/tags/v1.0.5.tar.gz",
-            .hash = "serde-1.0.1-1DszT_hrDQAURHcyOhR7wEKwqbF8FYl8vN26pKLLCkWn",
+            .url = "git+https://github.com/nullndvoid/serde.zig#8c37529de2d75c9cb610715507c5812f50640126",
+            .hash = "serde-1.0.1-1DszT4J0DQCrmlz97iSvTtJjQt0tv9zLuwSq5Ypf0Ewh",
         },
     },
     .paths = .{
