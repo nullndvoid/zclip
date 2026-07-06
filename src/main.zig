@@ -98,8 +98,13 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             }
 
             if (cfg.net.peers) |peers| {
-                for (peers) |peer| {
-                    log.debug("Got peer: {s}, PK: {s}", .{ peer.nickname, peer.pubkey });
+                for (peers) |*peer| {
+                    peer.fix(&arena) catch |err| {
+                        log.err("Could not use configured peer \"{s}\". Reason: {t}", .{ peer.nickname, err });
+                        // log.info("To add a peer, try `zclip client peer nickame public_key`", .{}); TODO: Add this for fun.
+                        // In all seriousness if I want the Daemon to run as a systemd service, then I will need an easy way
+                        // to talk to it.
+                    };
                 }
                 inet_cfg.peers = peers;
             }
