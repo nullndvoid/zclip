@@ -14,16 +14,16 @@
 //! Generation of static keypairs for authentication between peers.
 
 const std = @import("std");
-const builtin = @import("builtin");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const X25519 = std.crypto.dh.X25519;
+const builtin = @import("builtin");
+
+const known = @import("known-folders");
 
 const log = std.log.scoped(.Identity);
 
 const Identity = @This();
-
-const known = @import("known-folders");
 
 private_key: [X25519.secret_length]u8,
 public_key: [X25519.public_length]u8,
@@ -121,7 +121,8 @@ fn correctPerms(io: Io, file: Io.File) !void {
 
     switch (@import("builtin").os.tag) {
         .linux, .macos => {
-            const mode = stat.permissions.toMode();
+            const mode = stat.permissions.toMode() & 0o7777;
+
             if (mode == 0o600) {
                 return;
             }
