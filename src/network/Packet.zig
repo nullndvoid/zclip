@@ -16,33 +16,28 @@
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
-const Ed25519 = std.crypto.sign.Ed25519;
 
 const serde = @import("serde");
 
 const Packet = @This();
 
-length: u64,
+const MAGIC = "zclip";
+
+/// Reject if not present.
+magic: []const u8 = MAGIC,
 /// Will later be used to parse packets or reject them. Ignored for now.
 protocol_version: u8,
-encrypted_packet: EncryptedPacket,
-/// Signature to show other fields have not been tampered with.
-signature: [Ed25519.Signature.encoded_length]u8,
+payload: Payload,
 
 pub const Payload = struct {};
-
-pub const EncryptedPacket = struct {
-    /// This is a msgpack encoded payload. Encrypted with shared session key.
-    /// TODO: Implement and fill out payload.
-    payload: []const u8,
-
-    pub fn fromPayload(payload: Payload) void {
-        _ = payload; // autofix
-    }
-};
 
 /// User should free returned packet when no longer needed e.g. after sending.
 /// Perhaps use an Arena to handle this for you.
 pub fn fromReader(rdr: *Io.Reader, allocator: Allocator) !Packet {
-    return try serde.msgpack.fromReader(Packet, allocator, rdr);
+    const packet = try serde.msgpack.fromReader(Packet, allocator, rdr);
+
+    if (!std.mem.eql(u8, packet.magic, MAGIC))
+        return error.InvalidMagic;
+
+    return packet;
 }
