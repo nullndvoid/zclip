@@ -24,6 +24,7 @@ const b64 = std.base64.standard;
 const Serde = @import("serde");
 
 const Packet = @import("network/Packet.zig");
+pub const Identity = @import("network/Identity.zig");
 
 const log = std.log.scoped(.net);
 
@@ -47,6 +48,8 @@ pub const DEFAULT_NET_PORT = 48500;
 pub const Config = struct {
     bind_addr: Io.net.IpAddress = .{ .ip4 = .unspecified(DEFAULT_NET_PORT) },
     peers: []Peer = &.{},
+    /// This must be set!
+    identity: Identity = undefined,
 };
 
 pub fn parseIp(ip: []const u8) !Io.net.IpAddress {
@@ -115,9 +118,11 @@ pub fn deinit(self: *Network) void {
     self.server.deinit(self.io);
 }
 
+/// The peer has our pubkey already. Set in the configs out of band. So it should encrypt a message.
 fn handleConnectionRw(self: *Network, rdr: *Io.Reader, writer: *Io.Writer) void {
     _ = self; // autofix
     _ = rdr; // autofix
+
     log.err("TODO!", .{});
     _ = writer.write("NOT YET IMPLEMENTED") catch {};
     writer.flush() catch {};

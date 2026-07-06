@@ -77,6 +77,10 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const noisey = b.dependency("noisey", .{
+        .target = target,
+        .optimize = optimize,
+    });
 
     const exe = b.addExecutable(.{
         .name = "zclip",
@@ -97,6 +101,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("clap", clap.module("clap"));
     exe.root_module.addImport("known-folders", known_folders.module("known-folders"));
     exe.root_module.addImport("serde", serde.module("serde"));
+    exe.root_module.addImport("noisey", noisey.module("noisey"));
 
     exe.root_module.addOptions("options", exe_options);
 
@@ -112,6 +117,8 @@ pub fn build(b: *std.Build) void {
     exe_check.root_module.addImport("clap", clap.module("clap"));
     exe_check.root_module.addImport("known-folders", known_folders.module("known-folders"));
     exe_check.root_module.addImport("serde", serde.module("serde"));
+    exe_check.root_module.addImport("noisey", noisey.module("noisey"));
+
     exe_check.root_module.addOptions("options", exe_options);
 
     const check = b.step("check", "Check if zclip application compiles.");

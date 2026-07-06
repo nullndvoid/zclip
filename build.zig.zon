@@ -52,6 +52,10 @@
             .url = "git+https://github.com/nullndvoid/serde.zig#8c37529de2d75c9cb610715507c5812f50640126",
             .hash = "serde-1.0.1-1DszT4J0DQCrmlz97iSvTtJjQt0tv9zLuwSq5Ypf0Ewh",
         },
+        .noisey = .{
+            .url = "https://codeberg.org/nullndvoid2/noisey/archive/dev.tar.gz",
+            .hash = "noisey-0.0.0-J6MA0bxIBABKZgTJV31XAGeWSKL_gZ4rTj1TlsRWAjps",
+        },
     },
     .paths = .{
         "build.zig",

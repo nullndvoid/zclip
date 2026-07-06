@@ -108,6 +108,15 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
                 inet_cfg.bind_addr = addr;
             }
 
+            // Get our own identity.
+            const ident = try Network.Identity.getOrInit(
+                io,
+                arena.allocator(),
+                &envmap,
+            );
+
+            inet_cfg.identity = ident;
+
             try select.concurrent(.daemon, runDaemon, .{
                 &arena,
                 Daemon.Opts{
