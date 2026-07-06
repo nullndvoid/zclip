@@ -27,7 +27,6 @@ opts: Opts,
 arena: *ArenaAllocator,
 io: Io,
 clipboard: ?*zclip.Clipboard,
-server: ?Io.net.Server,
 select_tasks: ?Io.Select(TaskResults),
 select_tasks_buf: [2]TaskResults,
 
@@ -50,7 +49,6 @@ pub fn init(io: Io, arena: *ArenaAllocator, opts: Opts) Daemon {
         .arena = arena,
         .opts = opts,
         .clipboard = null,
-        .server = null,
         .select_tasks = null,
         .select_tasks_buf = undefined,
     };
@@ -72,20 +70,16 @@ pub fn start(self: *Daemon) !void {
 
     self.clipboard.?.setOnClip(void, clipCallback, @constCast(&{}));
 
-    var addr = try Io.net.UnixAddress.init(self.opts.socket_path);
-    self.server = try addr.listen(self.io, .{});
-
     var net = try Network.init(self.io, self.arena, self.opts.inet);
     defer net.deinit();
 
     self.select_tasks = .init(self.io, &self.select_tasks_buf);
     defer self.select_tasks.?.cancelDiscard();
 
-    try self.select_tasks.?.concurrent(.unix, UnixSocket.acceptConnections, .{
-        self.io,
-        &self.server.?,
-        self.clipboard.?,
-    });
+    var unix = try UnixSocket.init(self.io, self.clipboard.?, self.arena.allocator(), self.opts.socket_path);
+    defer unix.deinit();
+
+    try self.select_tasks.?.concurrent(.unix, UnixSocket.start, .{&unix});
 
     try self.select_tasks.?.concurrent(.inet, Network.start, .{
         &net,
@@ -103,18 +97,7 @@ pub fn deinit(self: *Daemon) void {
         select_tasks.cancelDiscard();
         self.select_tasks = null;
     }
-    if (self.server) |*server| {
-        server.deinit(self.io);
-        self.server = null;
 
-        const path = self.arena.allocator().dupeSentinel(u8, self.opts.socket_path, 0) catch unreachable;
-        defer self.arena.allocator().free(path);
-        if (@import("builtin").os.tag != .windows) {
-            if (std.c.unlink(path) == -1) {
-                log.err("Failed to unlink socket file! Please delete it manually at {s}", .{self.opts.socket_path});
-            }
-        }
-    }
     if (self.clipboard) |clipboard| {
         clipboard.deinit();
         self.clipboard = null;

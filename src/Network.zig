@@ -25,6 +25,7 @@ const Serde = @import("serde");
 
 const Packet = @import("network/Packet.zig");
 pub const Identity = @import("network/Identity.zig");
+const NoiseSession = @import("network/NoiseSession.zig");
 
 const log = std.log.scoped(.net);
 
@@ -172,7 +173,7 @@ fn acceptConnections(self: *Network) void {
 }
 
 pub const Peer = struct {
-    /// NaCl Box public key. Should be 32 bytes in length.
+    /// Peers public key. Should be 32 bytes in length.
     pubkey: []const u8,
 
     /// A nickname for the remote peer.
@@ -180,10 +181,18 @@ pub const Peer = struct {
 
     fixed: bool = false,
 
-    pub fn fix(self: *Peer) !void {
+    pub fn fix(self: *Peer, arena: *Arena) !void {
         if (self.fixed) return;
-        b64.Decoder.calcSizeUpperBound(self.pubkey);
+
+        const len = try b64.Decoder.calcSizeForSlice(self.pubkey);
+        if (len != 32) return error.InvalidPubkeyLength;
+
+        const pubkey: []u8 = try arena.allocator().alloc(u8, len);
+        errdefer arena.allocator().free(pubkey);
+
+        try b64.Decoder.decode(&pubkey, self.pubkey);
 
         self.fixed = true;
+        self.pubkey = pubkey;
     }
 };
