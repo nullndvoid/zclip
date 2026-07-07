@@ -19,6 +19,7 @@ const Allocator = std.mem.Allocator;
 const Hasher = std.crypto.hash.sha2.Sha256;
 
 const noisey = @import("noisey");
+const serde = @import("serde");
 
 const Network = @import("../Network.zig");
 
@@ -189,4 +190,18 @@ pub fn recv(self: *NoiseSession, rdr: *Io.Reader) ![]const u8 {
     const got = try self.read.decryptWithAd("", frame, self.plain_buf);
 
     return self.plain_buf[0..got];
+}
+
+/// Sends some data, messagepack encoded.
+pub fn sendT(self: *NoiseSession, writer: *Io.Writer, alloc: Allocator, that: anytype) !void {
+    const data = try serde.msgpack.toSlice(alloc, that);
+    try self.send(writer, data);
+}
+
+/// Recieves some data, messagepack encoded. Performs no validation on the recieved data.
+/// Perhaps I can write .validate methods on my wire types.
+pub fn recvT(self: *NoiseSession, comptime T: type, rdr: *Io.Reader, alloc: Allocator) !T {
+    const bytes = try self.recv(rdr);
+
+    return try serde.msgpack.fromSlice(T, alloc, bytes);
 }
