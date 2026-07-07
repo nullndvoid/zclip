@@ -63,31 +63,6 @@ const WorkerContext = struct {
     backend: *Backend,
 };
 
-/// Returns error.Stop if we should stop the worker without error.
-fn pollInCommands(ctx: *WorkerContext, buf: []Command) anyerror!void {
-    const in_commands_read = ctx.in.get(ctx.io, buf, 0) catch |err| switch (err) {
-        error.Canceled => {
-            log.err("Async task cancelled, must be shutting down. Some data may be lost.", .{});
-            return;
-        },
-        error.Closed => {
-            log.err("Commands in channel closed, must be shutting down. Some data may be lost.", .{});
-            return;
-        },
-    };
-    const commands = buf[0..in_commands_read];
-
-    for (commands) |cmd| {
-        switch (cmd) {
-            .Stop => return error.Stop,
-            .WriteClipboard => |clip| {
-                try ctx.backend.setClipboard(clip);
-            },
-            // else => return error.InvalidCommand,
-        }
-    }
-}
-
 pub fn setOnClip(self: *Clipboard, comptime T: type, comptime callback: fn (clip: *Clip, userdata: *T) anyerror!void, userdata: *T) void {
     self.on_clipboard = @ptrCast(@alignCast(&callback));
     self.userdata = @ptrCast(userdata);
@@ -117,6 +92,11 @@ fn addClips(self: *Clipboard, allocator: Allocator, clips: []Clip) anyerror!void
     }
 }
 
+const WorkerEvent = union(enum) {
+    commands: (Io.QueueClosedError || Io.Cancelable)!usize,
+    clips: (Io.QueueClosedError || Io.Cancelable)!usize,
+};
+
 /// # Errors
 ///
 /// Returns `InvalidCommand` on reciept of invalid commands.
@@ -134,34 +114,57 @@ fn workerFn(self: *Clipboard, ctx: *WorkerContext) anyerror!void {
     const commands_in_buf = try ctx.alloc.alloc(Command, ctx.in.capacity());
     defer ctx.alloc.free(commands_in_buf);
 
-    var clips = clip_queue_buf;
+    var select_buf: [2]WorkerEvent = undefined;
+    var select = Io.Select(WorkerEvent).init(ctx.io, &select_buf);
+    defer select.cancelDiscard();
+
+    try select.concurrent(.commands, Io.Queue(Command).get, .{ ctx.in, ctx.io, commands_in_buf, 1 });
+    try select.concurrent(.clips, Io.Queue(Clip).get, .{ &ctx.clip_queue.queue, ctx.io, clip_queue_buf, 1 });
 
     while (true) {
-        pollInCommands(ctx, commands_in_buf) catch |err| switch (err) {
-            error.Stop => break,
-            else => return err,
-        };
+        switch (try select.await()) {
+            .commands => |result| {
+                const commands_read = result catch |err| switch (err) {
+                    error.Canceled => {
+                        log.err("Async task cancelled, must be shutting down. Some data may be lost.", .{});
+                        return;
+                    },
+                    error.Closed => {
+                        log.err("Commands in channel closed, must be shutting down. Some data may be lost.", .{});
+                        return;
+                    },
+                };
 
-        const clips_read = ctx.clip_queue.queue.get(ctx.io, clip_queue_buf, 1) catch |err| switch (err) {
-            // TODO: These might be handled already on deinit since we will check incoming commands first to cancel everything below.
-            error.Canceled => {
-                log.err("Async task cancelled, must be shutting down. Some data may be lost.", .{});
-                return;
-            },
-            error.Closed => {
-                log.err("Clip read channel closed, must be shutting down. Some data may be lost.", .{});
-                return;
-            },
-        };
+                for (commands_in_buf[0..commands_read]) |cmd| {
+                    switch (cmd) {
+                        .Stop => return,
+                        .WriteClipboard => |clip| {
+                            try ctx.backend.setClipboard(clip);
+                        },
+                    }
+                }
 
-        clips = clip_queue_buf[0..clips_read];
-        for (clips, 0..) |clip, idx| {
-            clips[idx] = clip;
+                try select.concurrent(.commands, Io.Queue(Command).get, .{ ctx.in, ctx.io, commands_in_buf, 1 });
+            },
+            .clips => |result| {
+                const clips_read = result catch |err| switch (err) {
+                    error.Canceled => {
+                        log.err("Async task cancelled, must be shutting down. Some data may be lost.", .{});
+                        return;
+                    },
+                    error.Closed => {
+                        log.err("Clip read channel closed, must be shutting down. Some data may be lost.", .{});
+                        return;
+                    },
+                };
+
+                addClips(self, ctx.alloc, clip_queue_buf[0..clips_read]) catch |err| {
+                    log.err("addClips failed with error {t}", .{err});
+                };
+
+                try select.concurrent(.clips, Io.Queue(Clip).get, .{ &ctx.clip_queue.queue, ctx.io, clip_queue_buf, 1 });
+            },
         }
-
-        addClips(self, ctx.alloc, clips) catch |err| {
-            log.err("addClips failed with error {t}", .{err});
-        };
     }
 }
 
