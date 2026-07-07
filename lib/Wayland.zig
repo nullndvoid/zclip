@@ -137,7 +137,10 @@ pub fn init(io: Io, arena: *std.heap.ArenaAllocator, clip_queue: *ClipQueue) !*W
 fn createDataOffer(self: *Wayland, clip: Clip) !void {
     const source = try self.dcm.createDataSource();
 
-    source.offer(clip.mime_type);
+    const mime_type = try self.arena.allocator().dupeSentinel(u8, clip.mime_type, 0);
+    errdefer self.arena.allocator().free(mime_type);
+
+    source.offer(mime_type);
     // To avoid reading back our own entries later on and deadlocking.
     source.offer(Mime.self_marker);
 

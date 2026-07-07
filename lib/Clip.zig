@@ -20,7 +20,7 @@ const std = @import("std");
 data: []const u8,
 /// Assumed to be correct. If we are reading from system clipboard, this is assumed valid.
 /// For writes, we perform no checks on the validity of the (data, mimetype) pair.
-mime_type: [:0]const u8,
+mime_type: []const u8,
 
 /// Set if the clipping is text. Not assumed UTF-8 although this check could be added later.
 is_text: bool,
