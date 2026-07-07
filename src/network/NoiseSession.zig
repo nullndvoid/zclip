@@ -38,6 +38,8 @@ write: noisey.CipherState,
 read_buf: []u8,
 write_buf: []u8,
 plain_buf: []u8,
+/// Stored for debug logging.
+peer_nick: []const u8,
 
 pub const Opts = struct {
     initiator: bool = true,
@@ -153,6 +155,7 @@ pub fn init(
         .read_buf = read_buf,
         .write_buf = write_buf,
         .plain_buf = plain_buf,
+        .peer_nick = peer_map.get(handshake.rs.?).?,
     };
 }
 
