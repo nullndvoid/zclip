@@ -39,7 +39,7 @@ const KEYFILE_DIR_PERMS: Io.File.Permissions = switch (builtin.os.tag) {
     else => @enumFromInt(0o700),
 };
 
-fn fromPath(io: Io, absolute_path: []const u8, quiet: bool) !Identity {
+pub fn fromPath(io: Io, absolute_path: []const u8, quiet: bool) !Identity {
     var keyfile = Io.Dir.openFileAbsolute(io, absolute_path, .{}) catch |err| {
         switch (err) {
             error.FileNotFound => {
@@ -85,7 +85,7 @@ fn fromPath(io: Io, absolute_path: []const u8, quiet: bool) !Identity {
 
 /// Returns the absolute path of zclip's directory inside the well known data
 /// directory for this platform. Caller owns the returned memory.
-fn getWellKnownDir(io: Io, alloc: Allocator, environ: *const std.process.Environ.Map) ![]const u8 {
+pub fn getWellKnownDir(io: Io, alloc: Allocator, environ: *const std.process.Environ.Map) ![]const u8 {
     const data_dir_path = known.getPath(io, alloc, environ, .data) catch |err| {
         switch (err) {
             error.OutOfMemory => {
@@ -105,7 +105,7 @@ fn getWellKnownDir(io: Io, alloc: Allocator, environ: *const std.process.Environ
     return std.fmt.allocPrint(alloc, "{s}/zclip", .{data_dir_path});
 }
 
-fn fromWellKnown(io: Io, alloc: Allocator, environ: *const std.process.Environ.Map, quiet: bool) !Identity {
+pub fn fromWellKnown(io: Io, alloc: Allocator, environ: *const std.process.Environ.Map, quiet: bool) !Identity {
     const keyfile_dir_path = try getWellKnownDir(io, alloc, environ);
     defer alloc.free(keyfile_dir_path);
 
@@ -140,11 +140,11 @@ fn correctPerms(io: Io, file: Io.File) !void {
 
 /// Uses the well known data directory to fetch the identity, or saves a newly generated
 /// private key in this path if it does not exist. Call this and be done.
-pub fn getOrInit(io: Io, alloc: Allocator, environ: *const std.process.Environ.Map) !Identity {
-    const identity = fromWellKnown(io, alloc, environ, true) catch |err| {
+pub fn getOrInit(io: Io, alloc: Allocator, data_dir: []const u8) !Identity {
+    const identity = fromPath(io, data_dir, true) catch |err| {
         switch (err) {
             error.FileNotFound => {
-                const ident = try writeIdentity(io, alloc, environ);
+                const ident = try writeIdentity(io, data_dir);
 
                 const size = std.base64.standard.Encoder.calcSize(ident.public_key.len);
                 const buf = try alloc.alloc(u8, size);
@@ -168,23 +168,20 @@ pub fn getOrInit(io: Io, alloc: Allocator, environ: *const std.process.Environ.M
     return identity;
 }
 
-pub fn writeIdentity(io: Io, alloc: Allocator, environ: *const std.process.Environ.Map) !Identity {
+pub fn writeIdentity(io: Io, data_dir: []const u8) !Identity {
     const kp = X25519.KeyPair.generate(io);
 
-    const keyfile_dir_path = try getWellKnownDir(io, alloc, environ);
-    defer alloc.free(keyfile_dir_path);
-
-    Io.Dir.createDirAbsolute(io, keyfile_dir_path, KEYFILE_DIR_PERMS) catch |err| switch (err) {
+    Io.Dir.cwd().createDir(io, data_dir, KEYFILE_DIR_PERMS) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => {
-            log.err("Could not create zclip data directory at {s}. Reason: {t}", .{ keyfile_dir_path, err });
+            log.err("Could not create zclip data directory at {s}. Reason: {t}", .{ data_dir, err });
             return err;
         },
     };
 
     // Open the keyfile dir and path for writing.
-    const keyfile_dir = Io.Dir.openDirAbsolute(io, keyfile_dir_path, .{}) catch |err| {
-        log.err("Could not open zclip data directory at {s}. Reason: {t}", .{ keyfile_dir_path, err });
+    const keyfile_dir = Io.Dir.cwd().openDir(io, data_dir, .{}) catch |err| {
+        log.err("Could not open zclip data directory at {s}. Reason: {t}", .{ data_dir, err });
         return err;
     };
     defer keyfile_dir.close(io);
@@ -192,7 +189,7 @@ pub fn writeIdentity(io: Io, alloc: Allocator, environ: *const std.process.Envir
     const keyfile = keyfile_dir.createFile(io, "identity", .{
         .permissions = KEYFILE_PERMS,
     }) catch |err| {
-        log.err("Could not create identity keyfile in {s}. Reason: {t}", .{ keyfile_dir_path, err });
+        log.err("Could not create identity keyfile in {s}. Reason: {t}", .{ data_dir, err });
         return err;
     };
     defer keyfile.close(io);
@@ -204,7 +201,7 @@ pub fn writeIdentity(io: Io, alloc: Allocator, environ: *const std.process.Envir
 
     writeKey(writer, &kp.secret_key) catch {
         log.err("Could not write private key to {s}/identity. Reason: {t}", .{
-            keyfile_dir_path,
+            data_dir,
             file_writer.err orelse error.WriteFailed,
         });
         return error.WriteFailed;
