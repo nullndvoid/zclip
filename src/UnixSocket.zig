@@ -40,6 +40,8 @@ pub const CommandType = enum {
     GetPubkey,
     /// Daemon replies with the local public key.
     Pubkey,
+    /// Either side may issue this if the command recieved was invalid.
+    InvalidCommand,
 };
 
 pub const Command = union(CommandType) {
@@ -47,6 +49,7 @@ pub const Command = union(CommandType) {
     Clip: zclip.Clip,
     GetPubkey,
     Pubkey: PublicKey,
+    InvalidCommand,
 };
 
 clipboard: *zclip.Clipboard,
@@ -104,16 +107,22 @@ pub fn acceptConnections(self: *UnixSocket) void {
                 error.Canceled => {
                     return;
                 },
+                error.ConnectionAborted => continue,
                 else => {
                     log.err("acceptConnections, error accepting connection: {t}", .{err});
-                    continue;
+
+                    return;
                 },
             }
         };
 
         log.debug("Accepted UNIX socket connection", .{});
 
-        group.concurrent(self.io, handleConnection, .{ self, stream }) catch unreachable;
+        group.concurrent(self.io, handleConnection, .{ self, stream }) catch |err| {
+            switch (err) {
+                error.ConcurrencyUnavailable => stream.close(self.io),
+            }
+        };
     }
 }
 
@@ -122,6 +131,8 @@ pub fn acceptConnections(self: *UnixSocket) void {
 /// Commands are prefixed by their Content-Size, this does not include the Content-Size (u64) itself.
 /// Commands are all sent in network (big endian) byte ordering.
 fn handleConnection(self: *UnixSocket, stream: Io.net.Stream) !void {
+    defer stream.close(self.io);
+
     var read_buf: [4096]u8 = undefined;
     var write_buf: [4096]u8 = undefined;
 
@@ -131,9 +142,10 @@ fn handleConnection(self: *UnixSocket, stream: Io.net.Stream) !void {
     const rdr = &sock_rdr.interface;
     const writer = &sock_writer.interface;
 
-    var future = self.io.concurrent(handleConnectionRw, .{ self, rdr, writer }) catch unreachable;
-    _ = future.await(self.io) catch |err| {
-        log.err("handleConnectionRw errored with: {t}", .{err});
+    self.handleConnectionRw(rdr, writer) catch |err| {
+        log.err("handleConnectionRw failed. Reason: {t}", .{err});
+        if (sock_rdr.err) |e| log.err("Underlying stream read error: {t}", .{e});
+        if (sock_writer.err) |e| log.err("Underlying stream write error: {t}", .{e});
     };
 
     stream.shutdown(self.io, .both) catch |err| {
@@ -150,31 +162,65 @@ fn handleConnectionRw(self: *UnixSocket, rdr: *Io.Reader, writer: *Io.Writer) !v
     var arena = ArenaAllocator.init(self.alloc);
     defer arena.deinit();
 
-    var retry: bool = true;
-
     while (true) {
-        const command = serde.msgpack.fromReader(Command, arena.allocator(), rdr) catch |err| {
-            switch (err) {
-                error.ReadFailed => {
-                    if (retry == false) return;
-                    retry = false;
-                    continue;
-                },
-                else => {
-                    log.err("Failed to read command. Reason: {t}", .{err});
-                    return err;
-                },
-            }
+        _ = arena.reset(.retain_capacity);
+
+        const command = readFramedCommand(rdr, arena.allocator(), .{}) catch |err| {
+            log.err("Failed to read command. Reason: {t}", .{err});
+            return err;
         };
-        const command_json = try serde.json.toSliceWith(arena.allocator(), command, .{ .pretty = true });
 
-        defer self.alloc.free(command_json);
+        log.debug("Got command {any}", .{command});
 
-        log.debug("Got command {s}", .{command_json});
+        const reply: Command = switch (command) {
+            .GetPubkey => .{
+                .Pubkey = .{
+                    // TODO: Implement stub.
+                    .pubkey = @splat(0x10),
+                },
+            },
+            else => continue,
+        };
 
-        try writer.writeAll(command_json);
-        try writer.flush();
+        try writeCommandFramed(writer, arena.allocator(), reply);
     }
+}
+
+const MAX_CONTENT_LENGTH = 16 * 1024 * 1024;
+
+const ReadConfig = struct {
+    max_length: ?u64 = null,
+};
+
+/// You should consider using an arena to avoid leaking internal allocations,
+/// or manually freeing things like slices.
+pub fn readFramedCommand(rdr: *Io.Reader, alloc: Allocator, config: ReadConfig) !Command {
+    const content_length = try rdr.takeInt(u64, .big);
+    if (config.max_length) |length| {
+        if (content_length >= length) return error.CommandTooLong;
+    }
+
+    const bytes = try alloc.alloc(u8, content_length);
+    defer alloc.free(bytes);
+
+    var read: usize = 0;
+
+    while (read < content_length) {
+        read += try rdr.readSliceShort(bytes[read..]);
+    }
+
+    const command = try serde.msgpack.fromSlice(Command, alloc, bytes);
+
+    return command;
+}
+
+pub fn writeCommandFramed(writer: *Io.Writer, alloc: Allocator, command: Command) !void {
+    const data = try serde.msgpack.toSlice(alloc, command);
+    defer alloc.free(data);
+
+    try writer.writeInt(u64, data.len, .big);
+    try writer.writeAll(data);
+    try writer.flush();
 }
 
 fn clipCallback(clip: *zclip.Clip, _: *void) anyerror!void {
