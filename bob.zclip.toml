@@ -1,0 +1,9 @@
+# I will use this config file for testing peers connections.
+
+[net]
+daemon_bind_address = "127.0.0.1:48501"
+
+[[net.peers]]
+nickname = "Alice"
+pubkey = "pPNmbEnZyAXBnEy/KRJVKDIMtKrg8gyrMQt8/tjoN0s="
+addr = "127.0.0.1:48500"
