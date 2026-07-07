@@ -23,11 +23,10 @@ const Clipboard = zclip.Clipboard;
 const Command = Clipboard.Command;
 
 const Cli = @import("Cli.zig");
+const Client = @import("Client.zig");
 const Config = @import("Config.zig");
 const Daemon = @import("Daemon.zig");
 const Network = @import("Network.zig");
-
-// const Client = @import("Client.zig");
 
 const log = std.log.scoped(.zclip);
 
@@ -83,14 +82,19 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
 
     try select.concurrent(.signal, waitForInterrupt, .{});
 
+    const socket_path = cli_args.socket_path orelse try getSocketPath(arena.allocator(), minimal.environ);
+
     switch (cli_args.mode) {
         .Client => {
-            log.err("Not yet implemented!", .{});
-            return;
+            var client_arena = std.heap.ArenaAllocator.init(gpa.allocator());
+            var client = try Client.init(io, &client_arena, .{
+                .socket_path = socket_path,
+            });
+            defer client.deinit();
+
+            try client.sendCommand(.GetPubkey);
         },
         .Daemon => {
-            const socket_path = cli_args.socket_path orelse try getSocketPath(arena.allocator(), minimal.environ);
-
             var inet_cfg = Network.Config{};
             if (cfg.net.daemon_bind_address) |addr| {
                 const ip = try Network.parseIp(addr);
