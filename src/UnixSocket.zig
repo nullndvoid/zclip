@@ -165,9 +165,17 @@ fn handleConnectionRw(self: *UnixSocket, rdr: *Io.Reader, writer: *Io.Writer) !v
     while (true) {
         _ = arena.reset(.retain_capacity);
 
-        const command = readFramedCommand(rdr, arena.allocator(), .{}) catch |err| {
-            log.err("Failed to read command. Reason: {t}", .{err});
-            return err;
+        const command = readFramedCommand(rdr, arena.allocator(), .{}) catch |err| switch (err) {
+            // Client disconnected cleanly between commands.
+            error.EndOfStream => return,
+            error.TruncatedCommand => {
+                log.err("Client disconnected mid-command.", .{});
+                return err;
+            },
+            else => {
+                log.err("Failed to read command. Reason: {t}", .{err});
+                return err;
+            },
         };
 
         log.debug("Got command {any}", .{command});
@@ -194,8 +202,13 @@ const ReadConfig = struct {
 
 /// You should consider using an arena to avoid leaking internal allocations,
 /// or manually freeing things like slices.
+///
+/// Returns `error.EndOfStream` if the peer disconnected before sending a
+/// length prefix (a clean disconnect), and `error.TruncatedCommand` if the
+/// stream ended partway through a command.
 pub fn readFramedCommand(rdr: *Io.Reader, alloc: Allocator, config: ReadConfig) !Command {
     const content_length = try rdr.takeInt(u64, .big);
+
     if (config.max_length) |length| {
         if (content_length >= length) return error.CommandTooLong;
     }
@@ -203,11 +216,10 @@ pub fn readFramedCommand(rdr: *Io.Reader, alloc: Allocator, config: ReadConfig) 
     const bytes = try alloc.alloc(u8, content_length);
     defer alloc.free(bytes);
 
-    var read: usize = 0;
-
-    while (read < content_length) {
-        read += try rdr.readSliceShort(bytes[read..]);
-    }
+    rdr.readSliceAll(bytes) catch |err| switch (err) {
+        error.EndOfStream => return error.TruncatedCommand,
+        else => |e| return e,
+    };
 
     const command = try serde.msgpack.fromSlice(Command, alloc, bytes);
 
