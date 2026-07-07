@@ -40,15 +40,21 @@ pub const Opts = struct {
     pad: bool = true,
 };
 
+/// Makes no attempt to tell peer about this.
+pub fn deinit(self: *NoiseSession) void {
+    std.crypto.secureZero(u8, self.read.k);
+    std.crypto.secureZero(u8, self.write.k);
+}
+
 pub fn init(
     io: Io,
     alloc: Allocator,
-    opts: Opts,
     rdr: *Io.Reader,
     writer: *Io.Writer,
     local_keypair: Network.Identity,
-    peer_pubkey: []const u8,
     peer_map: *Network.PeerMap,
+    peer_pubkey: ?[]const u8,
+    opts: Opts,
 ) !NoiseSession {
     var aes = noisey.Cipher.Aes256Gcm{};
     const cipher_unpadded = aes.cipher(false);

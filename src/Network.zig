@@ -41,6 +41,8 @@ start_task: Io.Future(void),
 peers: PeerMap,
 /// A set of nicknames in the config.
 nicks: std.StringHashMap(void),
+/// This daemon's identity.
+identity: Identity,
 
 const Network = @This();
 
@@ -49,8 +51,6 @@ pub const DEFAULT_NET_PORT = 48500;
 pub const Config = struct {
     bind_addr: Io.net.IpAddress = .{ .ip4 = .unspecified(DEFAULT_NET_PORT) },
     peers: []Peer = &.{},
-    /// This must be set!
-    identity: Identity = undefined,
 };
 
 pub fn parseIp(ip: []const u8) !Io.net.IpAddress {
@@ -80,7 +80,7 @@ fn collectPeers(peers: []const Peer, alloc: Allocator) !struct { hashmap: PeerMa
     };
 }
 
-pub fn init(io: Io, arena: *Arena, config: Config) !Network {
+pub fn init(io: Io, arena: *Arena, identity: Identity, config: Config) !Network {
     const peers = try collectPeers(config.peers, arena.allocator());
 
     var allocating = Io.Writer.Allocating.init(arena.allocator());
@@ -104,6 +104,7 @@ pub fn init(io: Io, arena: *Arena, config: Config) !Network {
         .start_task = undefined,
         .nicks = peers.set,
         .peers = peers.hashmap,
+        .identity = identity,
     };
 }
 
@@ -123,12 +124,22 @@ pub fn deinit(self: *Network) void {
 
 /// The peer has our pubkey already. Set in the configs out of band. So it should encrypt a message.
 fn handleConnectionRw(self: *Network, rdr: *Io.Reader, writer: *Io.Writer) void {
-    _ = self; // autofix
-    _ = rdr; // autofix
+    // The peer connecting is initiator. Setup a noise session.
+    const session = try NoiseSession.init(
+        self.io,
+        self.arena.allocator(),
+        rdr,
+        writer,
+        self.identity,
+        self.peers,
+        null,
+        .{
+            .initiator = false,
+        },
+    );
+    defer session.deinit();
 
-    log.err("TODO!", .{});
-    _ = writer.write("NOT YET IMPLEMENTED") catch {};
-    writer.flush() catch {};
+    
 }
 
 fn handleConnection(self: *Network, stream: Io.net.Stream) void {
