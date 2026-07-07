@@ -20,8 +20,9 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 
 const serde = @import("serde");
 
-const Command = @import("UnixSocket.zig").Command;
-const CommandType = @import("UnixSocket.zig").CommandType;
+const UnixSocket = @import("UnixSocket.zig");
+const Command = UnixSocket.Command;
+const CommandType = UnixSocket.CommandType;
 
 const log = std.log.scoped(.Client);
 
@@ -33,7 +34,7 @@ pub const ClientError = error{
     ServerCommand,
     ReadFailed,
     WriteFailed,
-};
+} || Io.ConcurrentError || Io.Cancelable;
 
 pub const Opts = struct {
     socket_path: []const u8,
@@ -79,8 +80,12 @@ pub fn sendCommand(self: *Client, command: Command) !void {
     try self.sendCommandRw(rdr, writer, command);
 }
 
+const SelectTask = union(enum) {
+    timer: Io.Cancelable!void,
+    read: anyerror!void,
+};
+
 fn sendCommandRw(self: *Client, rdr: *Io.Reader, writer: *Io.Writer, command: Command) ClientError!void {
-    _ = rdr; // autofix
     switch (command) {
         .Clip, .Pubkey => return error.ServerCommand,
         else => {},
@@ -91,23 +96,56 @@ fn sendCommandRw(self: *Client, rdr: *Io.Reader, writer: *Io.Writer, command: Co
         else => null,
     };
 
-    serde.msgpack.toWriter(self.arena.allocator(), writer, command) catch |err| {
+    UnixSocket.writeCommandFramed(writer, self.arena.allocator(), command) catch |err| {
         log.err("Sending command {t} failed. Reason: {t}", .{ command, err });
 
         return error.WriteFailed;
     };
+
     if (resp_tag == null) return;
 
     // TODO: Have a timeout.
+    var select_tasks: [2]SelectTask = undefined;
+    var select = Io.Select(SelectTask).init(self.io, &select_tasks);
 
-    // const reply = serde.msgpack.fromReader(Command, self.arena.allocator(), rdr) catch |err| {
-    //     log.err("Failed to read reply from daemon. Reason: {t}", .{err});
+    try select.concurrent(.read, readResponseHelper, .{ self, rdr, resp_tag.? });
+    try select.concurrent(.timer, Io.sleep, .{
+        self.io,
+        .fromMilliseconds(200),
+        .real,
+    });
 
-    //     return error.ReadFailed;
-    // };
-    // const tag = std.meta.activeTag(reply);
+    defer select.cancelDiscard();
 
-    // if (tag != resp_tag.?) {
-    //     log.err("Got unexpected reply from daemon. Expected {s} but got {s}", .{ @tagName(resp_tag.?), @tagName(tag) });
-    // }
+    const res = try select.await();
+    switch (res) {
+        .read => |rd| {
+            rd catch |err| {
+                log.err("Failed to read daemon response. Reason: {t}", .{err});
+            };
+        },
+        .timer => |resp| {
+            resp catch |err| {
+                switch (err) {
+                    error.Canceled => return,
+                }
+            };
+
+            log.err("Wait for daemon response timed out.", .{});
+        },
+    }
+}
+
+fn readResponseHelper(self: *Client, rdr: *Io.Reader, expected_tag: CommandType) !void {
+    const reply = UnixSocket.readFramedCommand(rdr, self.arena.allocator(), .{}) catch |err| {
+        log.err("Failed to read reply from daemon. Reason: {t}", .{err});
+
+        return error.ReadFailed;
+    };
+
+    const tag = std.meta.activeTag(reply);
+
+    if (tag != expected_tag) {
+        log.err("Got unexpected reply from daemon. Expected {s} but got {s}", .{ @tagName(expected_tag), @tagName(tag) });
+    }
 }
