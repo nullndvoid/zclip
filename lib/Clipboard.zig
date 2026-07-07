@@ -142,7 +142,7 @@ fn workerFn(self: *Clipboard, ctx: *WorkerContext) anyerror!void {
             else => return err,
         };
 
-        const clips_read = ctx.clip_queue.queue.get(ctx.io, clip_queue_buf, 0) catch |err| switch (err) {
+        const clips_read = ctx.clip_queue.queue.get(ctx.io, clip_queue_buf, 1) catch |err| switch (err) {
             // TODO: These might be handled already on deinit since we will check incoming commands first to cancel everything below.
             error.Canceled => {
                 log.err("Async task cancelled, must be shutting down. Some data may be lost.", .{});
