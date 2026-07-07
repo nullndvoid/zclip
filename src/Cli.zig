@@ -29,6 +29,7 @@ const SubCommands = enum {
 };
 
 const main_parsers = .{
+    .str = clap.parsers.string,
     .command = clap.parsers.enumeration(SubCommands),
 };
 
