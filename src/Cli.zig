@@ -91,8 +91,18 @@ pub fn setupAndParseArgs(io: Io, arena: *ArenaAllocator, args: std.process.Args,
 
         opts.should_exit = true;
         return;
-    } else if (res.args.verbose != 0) {
+    }
+
+    if (res.args.verbose != 0) {
         opts.verbose = true;
+    }
+
+    if (res.args.config) |cfg| {
+        opts.config_path = cfg;
+    }
+
+    if (res.args.data) |data| {
+        opts.data_dir = data;
     }
 
     const mode = res.positionals[0];
@@ -262,10 +272,12 @@ const postscript =
 ;
 
 const params = clap.parseParamsComptime(
-    \\ -h, --help            Display this help and exit
-    \\ --version             Show the version of the software
-    \\ -v, --verbose         Set the default log level to debug
-    \\ <command>             This should be client or daemon (default is client)
+    \\ -h, --help           Display this help and exit
+    \\ --version            Show the version of the software
+    \\ -v, --verbose        Set the default log level to debug
+    \\ -c, --config  <str>  Set a path to the configuration file
+    \\ -d, --data    <str>  Set a path to the data directory
+    \\ <command>            This should be client or daemon
 );
 
 pub const Mode = enum {
@@ -288,4 +300,8 @@ pub const CliOpts = struct {
     should_exit: bool = false,
     /// The bind address to bind the Daemon to.
     bind_addr: ?Io.net.IpAddress = null,
+    /// The config file path to use.
+    config_path: ?[]const u8 = null,
+    /// The path to the data directory to use.
+    data_dir: ?[]const u8 = null,
 };
