@@ -34,10 +34,12 @@ alloc: Allocator,
 opts: Opts,
 read: noisey.CipherState,
 write: noisey.CipherState,
+read_buf: []u8,
+write_buf: []u8,
+plain_buf: []u8,
 
 pub const Opts = struct {
     initiator: bool = true,
-    pad: bool = true,
 };
 
 /// Makes no attempt to tell peer about this.
@@ -49,6 +51,9 @@ pub fn deinit(self: *NoiseSession) void {
     if (self.write.k) |*k| {
         std.crypto.secureZero(u8, k);
     }
+
+    self.alloc.free(self.read_buf);
+    self.alloc.free(self.write_buf);
 }
 
 pub fn init(
@@ -61,6 +66,15 @@ pub fn init(
     peer_pubkey: ?[]const u8,
     opts: Opts,
 ) !NoiseSession {
+    const read_buf = try alloc.alloc(u8, noisey.MAX_MESSAGE_LENGTH);
+    errdefer alloc.free(read_buf);
+
+    const write_buf = try alloc.alloc(u8, noisey.MAX_MESSAGE_LENGTH);
+    errdefer alloc.free(write_buf);
+
+    const plain_buf = try alloc.alloc(u8, noisey.MAX_PAYLOAD_LENGTH);
+    errdefer alloc.free(plain_buf);
+
     var aes = noisey.Cipher.Aes256Gcm{};
     const cipher_unpadded = aes.cipher(false);
 
@@ -94,7 +108,7 @@ pub fn init(
         try sendFrame(writer, msg_buf[0..len0]);
 
         // <- e, ee, se
-        const m1 = try readFrame(rdr, &payload_buf);
+        const m1 = try readFrame(rdr, &msg_buf);
         _ = try handshake.readMessage(m1, &payload_buf);
     } else {
         const m0 = try readFrame(rdr, &msg_buf);
@@ -123,8 +137,8 @@ pub fn init(
     std.debug.assert(handshake.isComplete());
     var states = handshake.split();
 
-    states.@"0".cipher.pad = opts.pad;
-    states.@"1".cipher.pad = opts.pad;
+    states.@"0".cipher.pad = true;
+    states.@"1".cipher.pad = true;
 
     return .{
         .io = io,
@@ -132,6 +146,9 @@ pub fn init(
         .opts = opts,
         .read = if (opts.initiator) states.@"1" else states.@"0",
         .write = if (opts.initiator) states.@"0" else states.@"1",
+        .read_buf = read_buf,
+        .write_buf = write_buf,
+        .plain_buf = plain_buf,
     };
 }
 
@@ -146,7 +163,27 @@ fn sendFrame(writer: *Io.Writer, data: []const u8) !void {
 
 fn readFrame(rdr: *Io.Reader, buf: []u8) ![]const u8 {
     const length = try rdr.takeInt(u16, .big);
+    if (length > buf.len) return error.FrameTooLarge;
+
     try rdr.readSliceAll(buf[0..length]);
 
     return buf[0..length];
+}
+
+pub fn send(self: *NoiseSession, writer: *Io.Writer, data: []const u8) !void {
+    const written = try self.write.encryptWithAd("", data, self.write_buf);
+    std.debug.assert(written == noisey.MAX_MESSAGE_LENGTH);
+
+    const bytes = self.write_buf[0..written];
+
+    try sendFrame(writer, bytes);
+}
+
+/// The returned slice is valid until the next call to recv.
+pub fn recv(self: *NoiseSession, rdr: *Io.Reader) ![]const u8 {
+    const frame = try readFrame(rdr, self.read_buf);
+
+    const got = try self.read.decryptWithAd("", frame, self.plain_buf);
+
+    return self.plain_buf[0..got];
 }
