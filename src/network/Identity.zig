@@ -39,22 +39,20 @@ const KEYFILE_DIR_PERMS: Io.File.Permissions = switch (builtin.os.tag) {
     else => @enumFromInt(0o700),
 };
 
-pub fn fromPath(io: Io, absolute_path: []const u8, quiet: bool) !Identity {
-    var keyfile = Io.Dir.openFileAbsolute(io, absolute_path, .{}) catch |err| {
+pub fn fromPath(io: Io, path: []const u8, quiet: bool) !Identity {
+    var keyfile = Io.Dir.cwd().openFile(io, path, .{}) catch |err| {
         switch (err) {
             error.FileNotFound => {
                 if (!quiet)
-                    log.err("Private key file not found at {s}.", .{absolute_path});
+                    log.err("Private key file not found at {s}.", .{path});
             },
             else => {
                 if (!quiet)
-                    log.err("Could not open private key file at {s}. Reason: {t}", .{ absolute_path, err });
+                    log.err("Could not open private key file at {s}. Reason: {t}", .{ path, err });
             },
         }
         return err;
     };
-
-    try correctPerms(io, keyfile);
 
     defer keyfile.close(io);
 
@@ -67,10 +65,10 @@ pub fn fromPath(io: Io, absolute_path: []const u8, quiet: bool) !Identity {
     rdr.readSliceAll(&key_buf) catch |err| {
         switch (err) {
             error.EndOfStream => {
-                log.err("Private key in {s} too short! This should be 32 bytes in length.", .{absolute_path});
+                log.err("Private key in {s} too short! This should be 32 bytes in length.", .{path});
             },
             else => {
-                log.err("Could not read from private key file at {s}. Reason: {t}", .{ absolute_path, err });
+                log.err("Could not read from private key file at {s}. Reason: {t}", .{ path, err });
             },
         }
 
@@ -115,33 +113,13 @@ pub fn fromWellKnown(io: Io, alloc: Allocator, environ: *const std.process.Envir
     return try fromPath(io, keyfile_path, quiet);
 }
 
-/// If the file is not 0600, this is updated.
-fn correctPerms(io: Io, file: Io.File) !void {
-    const stat = try file.stat(io);
-
-    switch (@import("builtin").os.tag) {
-        .linux, .macos => {
-            const mode = stat.permissions.toMode() & 0o7777;
-
-            if (mode == 0o600) {
-                return;
-            }
-
-            try file.setPermissions(io, @enumFromInt(0o600));
-
-            log.info("Updated permissions on keyfile to 0600.", .{});
-        },
-        .windows => {
-            return;
-        },
-        else => unreachable,
-    }
-}
-
 /// Uses the well known data directory to fetch the identity, or saves a newly generated
 /// private key in this path if it does not exist. Call this and be done.
 pub fn getOrInit(io: Io, alloc: Allocator, data_dir: []const u8) !Identity {
-    const identity = fromPath(io, data_dir, true) catch |err| {
+    const path = try std.fmt.allocPrint(alloc, "{s}/identity", .{data_dir});
+    defer alloc.free(path);
+
+    const identity = fromPath(io, path, true) catch |err| {
         switch (err) {
             error.FileNotFound => {
                 const ident = try writeIdentity(io, data_dir);
