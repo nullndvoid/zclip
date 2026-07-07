@@ -156,10 +156,9 @@ fn startDaemon(
             envmap,
         );
 
-        inet_cfg.identity = ident;
-
         try select.concurrent(.daemon, runDaemon, .{
             arena,
+            ident,
             Daemon.Opts{
                 .socket_path = socket_path,
                 .inet = inet_cfg,
@@ -212,8 +211,8 @@ fn waitForInterruptPosix() std.Io.Cancelable!void {
     log.info("Got a signal, stopping gracefully...", .{});
 }
 
-fn runDaemon(arena: *std.heap.ArenaAllocator, opts: Daemon.Opts) (std.Io.Cancelable || anyerror)!void {
-    var daemon = Daemon.init(io, arena, opts);
+fn runDaemon(arena: *std.heap.ArenaAllocator, identity: Network.Identity, opts: Daemon.Opts) (std.Io.Cancelable || anyerror)!void {
+    var daemon = Daemon.init(io, arena, identity, opts);
     defer daemon.deinit();
 
     try daemon.start();

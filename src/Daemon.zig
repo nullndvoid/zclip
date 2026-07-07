@@ -29,6 +29,7 @@ io: Io,
 clipboard: ?*zclip.Clipboard,
 select_tasks: ?Io.Select(TaskResults),
 select_tasks_buf: [2]TaskResults,
+identity: Network.Identity,
 
 const TaskResults = union(enum) {
     unix: void,
@@ -43,7 +44,7 @@ pub const Opts = struct {
     inet: Network.Config = .{},
 };
 
-pub fn init(io: Io, arena: *ArenaAllocator, opts: Opts) Daemon {
+pub fn init(io: Io, arena: *ArenaAllocator, identity: Network.Identity, opts: Opts) Daemon {
     return .{
         .io = io,
         .arena = arena,
@@ -51,6 +52,7 @@ pub fn init(io: Io, arena: *ArenaAllocator, opts: Opts) Daemon {
         .clipboard = null,
         .select_tasks = null,
         .select_tasks_buf = undefined,
+        .identity = identity,
     };
 }
 
@@ -70,7 +72,7 @@ pub fn start(self: *Daemon) !void {
 
     self.clipboard.?.setOnClip(void, clipCallback, @constCast(&{}));
 
-    var net = try Network.init(self.io, self.arena, self.opts.inet);
+    var net = try Network.init(self.io, self.arena, self.identity, self.opts.inet);
     defer net.deinit();
 
     self.select_tasks = .init(self.io, &self.select_tasks_buf);

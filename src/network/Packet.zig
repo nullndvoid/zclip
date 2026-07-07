@@ -17,7 +17,7 @@ const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
-const serde = @import("serde");
+const Serde = @import("serde");
 
 const Packet = @This();
 
@@ -34,7 +34,7 @@ pub const Payload = struct {};
 /// User should free returned packet when no longer needed e.g. after sending.
 /// Perhaps use an Arena to handle this for you.
 pub fn fromReader(rdr: *Io.Reader, allocator: Allocator) !Packet {
-    const packet = try serde.msgpack.fromReader(Packet, allocator, rdr);
+    const packet = try Serde.msgpack.fromReader(Packet, allocator, rdr);
 
     if (!std.mem.eql(u8, packet.magic, MAGIC))
         return error.InvalidMagic;

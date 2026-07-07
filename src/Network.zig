@@ -125,21 +125,28 @@ pub fn deinit(self: *Network) void {
 /// The peer has our pubkey already. Set in the configs out of band. So it should encrypt a message.
 fn handleConnectionRw(self: *Network, rdr: *Io.Reader, writer: *Io.Writer) void {
     // The peer connecting is initiator. Setup a noise session.
-    const session = try NoiseSession.init(
+    var session = NoiseSession.init(
         self.io,
         self.arena.allocator(),
         rdr,
         writer,
         self.identity,
-        self.peers,
+        &self.peers,
         null,
         .{
             .initiator = false,
         },
-    );
-    defer session.deinit();
+    ) catch |err| switch (err) {
+        error.UnknownPeer, error.PeerDoesNotHoldPubkey => return,
+        else => {
+            log.err("Something went wrong with the Noise handshake. What: {t}", .{err});
+            log.err("The connection will be closed.", .{});
 
-    
+            return;
+        },
+    };
+
+    defer session.deinit();
 }
 
 fn handleConnection(self: *Network, stream: Io.net.Stream) void {

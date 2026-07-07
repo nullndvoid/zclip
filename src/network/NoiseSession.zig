@@ -42,8 +42,13 @@ pub const Opts = struct {
 
 /// Makes no attempt to tell peer about this.
 pub fn deinit(self: *NoiseSession) void {
-    std.crypto.secureZero(u8, self.read.k);
-    std.crypto.secureZero(u8, self.write.k);
+    if (self.read.k) |*k| {
+        std.crypto.secureZero(u8, k);
+    }
+
+    if (self.write.k) |*k| {
+        std.crypto.secureZero(u8, k);
+    }
 }
 
 pub fn init(
@@ -52,7 +57,7 @@ pub fn init(
     rdr: *Io.Reader,
     writer: *Io.Writer,
     local_keypair: Network.Identity,
-    peer_map: *Network.PeerMap,
+    peer_map: *const Network.PeerMap,
     peer_pubkey: ?[]const u8,
     opts: Opts,
 ) !NoiseSession {
@@ -105,7 +110,7 @@ pub fn init(
             }
         };
 
-        if (!peer_map.contains(handshake.rs)) {
+        if (!peer_map.contains(handshake.rs.?)) {
             log.warn("Peer tried connecting with unknown pubkey. Aborting.", .{});
             // Should probably close the connection. Will handle this upstream.
             return error.UnknownPeer;
@@ -131,7 +136,10 @@ pub fn init(
 }
 
 fn sendFrame(writer: *Io.Writer, data: []const u8) !void {
-    try writer.writeInt(u16, data.len, .big);
+    if (data.len > noisey.MAX_MESSAGE_LENGTH)
+        @panic("sendFrame called with too large a message! This is a bug.");
+
+    try writer.writeInt(u16, @intCast(data.len), .big);
     try writer.writeAll(data);
     try writer.flush();
 }
