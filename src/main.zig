@@ -67,11 +67,16 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     var envmap = try minimal.environ.createMap(gpa.allocator());
     defer envmap.deinit();
 
-    var config = try Config.fromWellKnown(io, arena.allocator(), &envmap);
+    var config: Config = undefined;
     defer config.deinit();
-    const cfg = config.data;
 
-    log.info("Successfully parsed config file", .{});
+    if (cli_args.config_path) |path| {
+        config = try Config.fromPath(io, arena.allocator(), path);
+    } else {
+        config = try Config.fromWellKnown(io, arena.allocator(), &envmap);
+    }
+
+    const cfg = config.data;
 
     if (cfg.debugging.memory_limit) |limit| {
         gpa.requested_memory_limit = limit;
@@ -85,15 +90,49 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
 
     const socket_path = cli_args.socket_path orelse try getSocketPath(arena.allocator(), minimal.environ);
 
+    // Get our own identity.
+    const data_dir = cli_args.data_dir orelse
+        try Network.Identity.getWellKnownDir(io, arena.allocator(), &envmap);
+
+    const ident = try Network.Identity.getOrInit(
+        io,
+        arena.allocator(),
+        data_dir,
+    );
+
+    var inet_cfg = Network.Config{};
+    if (cfg.net.daemon_bind_address) |addr| {
+        const ip = try Network.parseIp(addr);
+        inet_cfg.bind_addr = ip;
+    }
+
+    if (cfg.net.peers) |peers| {
+        for (peers) |*peer| {
+            peer.fix(arena) catch |err| {
+                log.err("Could not use configured peer \"{s}\". Reason: {t}", .{ peer.nickname, err });
+                // log.info("To add a peer, try `zclip client peer nickame public_key`", .{}); TODO: Add this for fun.
+                // In all seriousness if I want the Daemon to run as a systemd service, then I will need an easy way
+                // to talk to it.
+            };
+        }
+        inet_cfg.peers = peers;
+    }
+
+    if (cli_args.bind_addr) |addr| {
+        inet_cfg.bind_addr = addr;
+    }
+
     switch (cli_args.mode) {
-        .Daemon => try startDaemon(
-            cfg,
-            &arena,
-            cli_args,
-            &envmap,
-            &select,
-            socket_path,
-        ),
+        .Daemon => {
+            try select.concurrent(.daemon, runDaemon, .{
+                arena,
+                ident,
+                Daemon.Opts{
+                    .socket_path = socket_path,
+                    .inet = inet_cfg,
+                },
+            });
+        },
         .Client => {
             var client_arena = std.heap.ArenaAllocator.init(gpa.allocator());
             var client = try Client.init(io, &client_arena, .{
@@ -115,55 +154,6 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             log.err("daemon exited with error: {t}", .{err});
         },
         else => {},
-    }
-}
-
-fn startDaemon(
-    cfg: Config.InnerConfig,
-    arena: *std.heap.ArenaAllocator,
-    cli_args: Cli.CliOpts,
-    envmap: *const std.process.Environ.Map,
-    select: *Io.Select(TaskResult),
-    socket_path: []const u8,
-) !void {
-    {
-        var inet_cfg = Network.Config{};
-        if (cfg.net.daemon_bind_address) |addr| {
-            const ip = try Network.parseIp(addr);
-            inet_cfg.bind_addr = ip;
-        }
-
-        if (cfg.net.peers) |peers| {
-            for (peers) |*peer| {
-                peer.fix(arena) catch |err| {
-                    log.err("Could not use configured peer \"{s}\". Reason: {t}", .{ peer.nickname, err });
-                    // log.info("To add a peer, try `zclip client peer nickame public_key`", .{}); TODO: Add this for fun.
-                    // In all seriousness if I want the Daemon to run as a systemd service, then I will need an easy way
-                    // to talk to it.
-                };
-            }
-            inet_cfg.peers = peers;
-        }
-
-        if (cli_args.bind_addr) |addr| {
-            inet_cfg.bind_addr = addr;
-        }
-
-        // Get our own identity.
-        const ident = try Network.Identity.getOrInit(
-            io,
-            arena.allocator(),
-            envmap,
-        );
-
-        try select.concurrent(.daemon, runDaemon, .{
-            arena,
-            ident,
-            Daemon.Opts{
-                .socket_path = socket_path,
-                .inet = inet_cfg,
-            },
-        });
     }
 }
 
