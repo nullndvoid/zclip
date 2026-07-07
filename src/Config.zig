@@ -64,14 +64,14 @@ fn parseSlice(allocator: Allocator, data: []const u8, filename: []const u8) !Con
     return .{ .data = cfg };
 }
 
-pub fn fromPath(io: Io, allocator: Allocator, absolute_path: []const u8) !Config {
-    var config = Io.Dir.openFileAbsolute(io, absolute_path, .{}) catch |err| {
+pub fn fromPath(io: Io, allocator: Allocator, path: []const u8) !Config {
+    var config = Io.Dir.cwd().openFile(io, path, .{}) catch |err| {
         switch (err) {
             error.FileNotFound => {
-                log.err("Config file not found at {s}.", .{absolute_path});
+                log.err("Config file not found at {s}.", .{path});
             },
             else => {
-                log.err("Could not open config file at {s}. Reason: {t}", .{ absolute_path, err });
+                log.err("Could not open config file at {s}. Reason: {t}", .{ path, err });
             },
         }
         return err;
@@ -86,7 +86,7 @@ pub fn fromPath(io: Io, allocator: Allocator, absolute_path: []const u8) !Config
     const bytes = try rdr.allocRemaining(allocator, .unlimited);
     defer allocator.free(bytes);
 
-    return try parseSlice(allocator, bytes, std.fs.path.basename(absolute_path));
+    return try parseSlice(allocator, bytes, std.fs.path.basename(path));
 }
 
 /// TODO: Use a Well known location e.g. $XDG_CONFIG_DIR/zclip/zclip.zon.
