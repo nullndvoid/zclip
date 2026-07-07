@@ -31,12 +31,20 @@ pub const PublicKey = struct {
     pubkey: [32]u8,
 };
 
-pub const Command = union(enum) {
+pub const CommandType = enum {
     /// Client wants to manually post a clip to the Daemon.
-    PostClip: zclip.Clip,
+    PostClip,
     /// Daemon recieved a clip from remote peer or this machine.
-    Clip: zclip.Clip,
+    Clip,
     /// Client sends this to ask for local public key.
+    GetPubkey,
+    /// Daemon replies with the local public key.
+    Pubkey,
+};
+
+pub const Command = union(CommandType) {
+    PostClip: zclip.Clip,
+    Clip: zclip.Clip,
     GetPubkey,
     Pubkey: PublicKey,
 };
@@ -139,23 +147,33 @@ fn handleConnection(self: *UnixSocket, stream: Io.net.Stream) !void {
 }
 
 fn handleConnectionRw(self: *UnixSocket, rdr: *Io.Reader, writer: *Io.Writer) !void {
-    _ = writer; // autofix
     var arena = ArenaAllocator.init(self.alloc);
     defer arena.deinit();
 
-    var allocating = Io.Writer.Allocating.init(self.alloc);
-    defer allocating.deinit();
-
-    const json_writer = &allocating.writer;
+    var retry: bool = true;
 
     while (true) {
-        const command = try serde.msgpack.fromReader([]const u8, arena.allocator(), rdr);
-        try serde.json.toPrettyWriter(json_writer, command, .{});
+        const command = serde.msgpack.fromReader(Command, arena.allocator(), rdr) catch |err| {
+            switch (err) {
+                error.ReadFailed => {
+                    if (retry == false) return;
+                    retry = false;
+                    continue;
+                },
+                else => {
+                    log.err("Failed to read command. Reason: {t}", .{err});
+                    return err;
+                },
+            }
+        };
+        const command_json = try serde.json.toSliceWith(arena.allocator(), command, .{ .pretty = true });
 
-        var command_json = json_writer.toArrayList();
-        defer command_json.deinit(self.alloc);
+        defer self.alloc.free(command_json);
 
-        log.debug("Got command {s}", .{command_json.items});
+        log.debug("Got command {s}", .{command_json});
+
+        try writer.writeAll(command_json);
+        try writer.flush();
     }
 }
 
