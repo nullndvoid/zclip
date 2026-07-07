@@ -52,8 +52,11 @@ pub fn deinit(self: *NoiseSession) void {
         std.crypto.secureZero(u8, k);
     }
 
+    std.crypto.secureZero(u8, self.plain_buf);
+
     self.alloc.free(self.read_buf);
     self.alloc.free(self.write_buf);
+    self.alloc.free(self.plain_buf);
 }
 
 pub fn init(
