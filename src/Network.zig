@@ -29,7 +29,7 @@ const Packet = @import("network/Packet.zig");
 
 const log = std.log.scoped(.net);
 
-const PeerMap = std.StringHashMap([]const u8);
+pub const PeerMap = std.StringHashMap([]const u8);
 
 io: Io,
 arena: *Arena,
@@ -68,6 +68,8 @@ fn collectPeers(peers: []const Peer, alloc: Allocator) !struct { hashmap: PeerMa
     var set = std.StringHashMap(void).init(alloc);
 
     for (peers) |peer| {
+        if (!peer.fixed)
+            @panic("This is a bug. Peers public keys should be b64 decoded already.");
         try hashmap.put(peer.pubkey, peer.nickname);
         try set.put(peer.nickname, {});
     }
