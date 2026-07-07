@@ -196,6 +196,8 @@ fn handleConnectionRw(self: *UnixSocket, rdr: *Io.Reader, writer: *Io.Writer) !v
 
 const MAX_CONTENT_LENGTH = 16 * 1024 * 1024;
 
+const MAGIC = "zclip!";
+
 const ReadConfig = struct {
     max_length: ?u64 = null,
 };
@@ -207,6 +209,11 @@ const ReadConfig = struct {
 /// length prefix (a clean disconnect), and `error.TruncatedCommand` if the
 /// stream ended partway through a command.
 pub fn readFramedCommand(rdr: *Io.Reader, alloc: Allocator, config: ReadConfig) !Command {
+    var magic: [MAGIC.len]u8 = undefined;
+    try rdr.readSliceAll(&magic);
+
+    if (!std.mem.eql(u8, MAGIC, &magic)) return error.InvalidMagic;
+
     const content_length = try rdr.takeInt(u64, .big);
 
     if (config.max_length) |length| {
@@ -230,6 +237,7 @@ pub fn writeCommandFramed(writer: *Io.Writer, alloc: Allocator, command: Command
     const data = try serde.msgpack.toSlice(alloc, command);
     defer alloc.free(data);
 
+    try writer.writeAll(MAGIC);
     try writer.writeInt(u64, data.len, .big);
     try writer.writeAll(data);
     try writer.flush();
