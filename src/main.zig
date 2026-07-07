@@ -93,6 +93,10 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             defer client.deinit();
 
             try client.sendCommand(.GetPubkey);
+
+            select.cancelDiscard();
+
+            return;
         },
         .Daemon => {
             var inet_cfg = Network.Config{};
