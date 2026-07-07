@@ -199,7 +199,7 @@ const MAX_CONTENT_LENGTH = 16 * 1024 * 1024;
 const MAGIC = "zclip!";
 
 const ReadConfig = struct {
-    max_length: ?u64 = null,
+    max_length: ?u64 = MAX_CONTENT_LENGTH,
 };
 
 /// You should consider using an arena to avoid leaking internal allocations,
