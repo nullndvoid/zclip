@@ -123,7 +123,9 @@ pub fn deinit(self: *Network) void {
 }
 
 /// The peer has our pubkey already. Set in the configs out of band. So it should encrypt a message.
-fn handleConnectionRw(self: *Network, rdr: *Io.Reader, writer: *Io.Writer) void {
+fn handleConnectionRw(self: *Network, rdr: *Io.Reader, writer: *Io.Writer) !void {
+    const alloc = self.arena.allocator();
+
     // The peer connecting is initiator. Setup a noise session.
     var session = NoiseSession.init(
         self.io,
@@ -139,7 +141,7 @@ fn handleConnectionRw(self: *Network, rdr: *Io.Reader, writer: *Io.Writer) void 
     ) catch |err| switch (err) {
         error.UnknownPeer, error.PeerDoesNotHoldPubkey => return,
         else => {
-            log.err("Something went wrong with the Noise handshake. What: {t}", .{err});
+            log.err("Something went wrong with the Noise handshake :(. What: {t}", .{err});
             log.err("The connection will be closed.", .{});
 
             return;
@@ -147,6 +149,21 @@ fn handleConnectionRw(self: *Network, rdr: *Io.Reader, writer: *Io.Writer) void 
     };
 
     defer session.deinit();
+
+    while (true) {
+        const packet = session.recvT(Packet, rdr, alloc) catch |err| {
+            switch (err) {
+                error.EndOfStream => break,
+                else => {},
+            }
+
+            log.err("Could not read packet from peer `{s}`. Reason: {t}", .{ session.peer_nick, err });
+
+            return err;
+        };
+
+        log.debug("Got packet! {any}", .{packet});
+    }
 }
 
 fn handleConnection(self: *Network, stream: Io.net.Stream) void {
@@ -159,8 +176,14 @@ fn handleConnection(self: *Network, stream: Io.net.Stream) void {
     const rdr = &sock_rdr.interface;
     const writer = &sock_writer.interface;
 
-    var future = self.io.concurrent(handleConnectionRw, .{ self, rdr, writer }) catch unreachable;
-    _ = future.await(self.io);
+    self.handleConnectionRw(rdr, writer) catch |err| {
+        // switch (err) {
+        //     error.Canceled => return,
+        //     else => {},
+        // }
+
+        log.err("TCP connection handler errored. Reason: {t}", .{err});
+    };
 
     stream.shutdown(self.io, .both) catch |err| {
         switch (err) {
