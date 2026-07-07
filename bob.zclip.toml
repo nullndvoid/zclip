@@ -1,9 +1,30 @@
 # I will use this config file for testing peers connections.
 
-[net]
-daemon_bind_address = "127.0.0.1:48501"
+[debugging]
+# 1024 * 1024 * 512 = 512MB. Might be useful to set for debugging purposes. 
+# memory_limit = 536870912
 
-[[net.peers]]
+[daemon]
+# You can optionally specify a port here. Defaults to 48500.
+bind_address = "127.0.0.1:48501"
+
+# Make sure the users accessing the socket are in the same group as the account
+# running the daemon.
+
+unix_socket_address = "./data/zclip_bob.sock"
+
+# This can be relative to cwd of the daemon/client, or absolute.
+
+data_dir = "./data"
+
+# A list of (internet) peers. Pubkeys can be copied over out of band, similar to SSH.
+# A keypair is generated on first launch of the daemon.
+[[daemon.peers]]
 nickname = "Alice"
-pubkey = "pPNmbEnZyAXBnEy/KRJVKDIMtKrg8gyrMQt8/tjoN0s="
+pubkey = "D2yR0SKYRqi2tw7TYM3Syk8IR01ajnYNtLOChNNVGQk="
 addr = "127.0.0.1:48500"
+
+[client]
+# Same rules apply as above. This should probably match daemon.unix_socket_address.
+
+# unix_socket_address = "mycustom.sock"

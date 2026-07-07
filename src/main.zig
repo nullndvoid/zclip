@@ -94,12 +94,12 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     );
 
     var inet_cfg = Network.Config{};
-    if (cfg.net.daemon_bind_address) |addr| {
+    if (cfg.daemon.bind_address) |addr| {
         const ip = try Network.parseIp(addr);
         inet_cfg.bind_addr = ip;
     }
 
-    if (cfg.net.peers) |peers| {
+    if (cfg.daemon.peers) |peers| {
         for (peers) |*peer| {
             peer.fix(&arena) catch |err| {
                 log.err("Could not use configured peer \"{s}\". Reason: {t}", .{ peer.nickname, err });

@@ -40,18 +40,31 @@ pub fn deinit(self: *Config) void {
 /// automatically parse into a struct.
 pub const InnerConfig = struct {
     debugging: DebuggingSection = .{},
-    net: NetworkSection = .{},
+    daemon: DaemonSection = .{},
+    client: ClientSection = .{},
 
     /// Optional memory limit for the process excluding I/O (futures). More useful for Debugging.
     const DebuggingSection = struct {
         memory_limit: ?usize = if (IS_DEBUG) BACKEND_ALLOC_LIMIT_DEFAULT else null,
     };
 
-    const NetworkSection = struct {
+    const DaemonSection = struct {
+        /// The address to bind the daemon to.
+        bind_address: ?[]const u8 = null,
+
+        /// The address to bind the UNIX socket to (or connect to).
+        unix_socket_address: ?[]const u8 = null,
+
+        /// The directory storing data such as keyfiles.
+        data_dir: ?[]const u8 = null,
+
         /// A list of peers pubkeys, and their nicknames.
         peers: ?[]Network.Peer = null,
-        /// The address to bind the daemon to.
-        daemon_bind_address: ?[]const u8 = null,
+    };
+
+    const ClientSection = struct {
+        /// The address to bind the UNIX socket to (or connect to).
+        unix_socket_address: ?[]const u8 = null,
     };
 };
 
