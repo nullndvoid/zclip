@@ -43,6 +43,8 @@ peers: PeerMap,
 nicks: std.StringHashMap(void),
 /// This daemon's identity.
 identity: Identity,
+/// Peers that this machine should attempt to connect to first.
+to_connect: []const Peer,
 
 const Network = @This();
 
@@ -63,25 +65,34 @@ pub fn parseIp(ip: []const u8) !Io.net.IpAddress {
 }
 
 /// Alloc is assumed to use an arena.
-fn collectPeers(peers: []const Peer, alloc: Allocator) !struct { hashmap: PeerMap, set: std.StringHashMap(void) } {
+fn collectPeers(identity: Identity, peers: []const Peer, alloc: Allocator) !struct {
+    hashmap: PeerMap,
+    set: std.StringHashMap(void),
+    to_connect: []const Peer,
+} {
     var hashmap = PeerMap.initContext(alloc, .{});
     var set = std.StringHashMap(void).init(alloc);
+    var to_connect_al = std.ArrayList(Peer).empty;
 
     for (peers) |peer| {
         if (!peer.fixed)
             @panic("This is a bug. Peers public keys should be b64 decoded already.");
         try hashmap.put(peer.pubkey, peer.nickname);
         try set.put(peer.nickname, {});
+
+        if (peer.addr != null and std.mem.order(u8, &identity.public_key, peer.pubkey) == .gt)
+            try to_connect_al.append(alloc, peer);
     }
 
     return .{
         .hashmap = hashmap,
         .set = set,
+        .to_connect = try to_connect_al.toOwnedSlice(alloc),
     };
 }
 
 pub fn init(io: Io, arena: *Arena, identity: Identity, config: Config) !Network {
-    const peers = try collectPeers(config.peers, arena.allocator());
+    const peers = try collectPeers(identity, config.peers, arena.allocator());
 
     var allocating = Io.Writer.Allocating.init(arena.allocator());
     const writer = &allocating.writer;
@@ -105,11 +116,134 @@ pub fn init(io: Io, arena: *Arena, identity: Identity, config: Config) !Network 
         .nicks = peers.set,
         .peers = peers.hashmap,
         .identity = identity,
+        .to_connect = peers.to_connect,
     };
+}
+
+/// Attempts to connect to a peer using some kind of exponential backoff.
+fn connectToPeer(self: *Network, peer: Peer) !void {
+    var addr = try Io.net.IpAddress.parseLiteral(peer.addr.?);
+    if (addr.getPort() == 0) addr.setPort(DEFAULT_NET_PORT);
+    var stream: Io.net.Stream = undefined;
+    var failed: bool = false;
+    const backoffs = [_]i64{
+        1,
+        3,
+        5,
+        10,
+        20,
+        30,
+    };
+    var backoff_idx: usize = 0;
+    var attempts: usize = 1;
+
+    while (true) {
+        stream = addr.connect(self.io, .{ .mode = .stream }) catch |err| {
+            switch (err) {
+                error.Canceled => return,
+                else => {
+                    if (!failed) {
+                        failed = true;
+                        log.warn("Cannot reach `{s}`. Retrying...", .{peer.nickname});
+                    } else {
+                        log.debug("Cannot reach `{s}`. Attempt {d}. Retrying...", .{ peer.nickname, attempts });
+                    }
+
+                    try self.io.sleep(.fromSeconds(backoffs[backoff_idx]), .real);
+                    if (backoff_idx != backoffs.len - 1)
+                        backoff_idx += 1;
+
+                    attempts += 1;
+
+                    continue;
+                },
+            }
+        };
+
+        break;
+    }
+
+    attempts = 0;
+    failed = false;
+
+    var read_buf: [4096]u8 = undefined;
+    var write_buf: [4096]u8 = undefined;
+
+    var sock_rdr = stream.reader(self.io, &read_buf);
+    var sock_writer = stream.writer(self.io, &write_buf);
+
+    const rdr = &sock_rdr.interface;
+    const writer = &sock_writer.interface;
+
+    // Setup a noise session.
+    var session: NoiseSession = undefined;
+
+    while (true) {
+        session = NoiseSession.init(
+            self.io,
+            self.arena.allocator(),
+            rdr,
+            writer,
+            self.identity,
+            &self.peers,
+            null,
+            .{
+                .initiator = true,
+            },
+        ) catch |err| switch (err) {
+            error.UnknownPeer => return,
+            error.PeerDoesNotHoldPubkey => {
+                // Since the remote peer might fix their config. Warn and jump to max increment.
+                if (!failed) {
+                    failed = true;
+                    log.warn("Peer `{s}` does not have this machines public key. Copy the following line to your peers config. Will retry in 30s", .{peer.nickname});
+                    const size = std.base64.standard.Encoder.calcSize(self.identity.public_key.len);
+                    const buf = try self.arena.allocator().alloc(u8, size);
+                    defer self.arena.allocator().free(buf);
+
+                    const b64_pk = b64.Encoder.encode(buf, &self.identity.public_key);
+                    log.info("pubkey = {s}", .{b64_pk});
+                } else {
+                    log.debug("Peer `{s}` still does not have this machines public key. Attempt {d}. Retrying soon...", .{ attempts, peer.nickname });
+                }
+
+                try self.io.sleep(.fromSeconds(backoffs[backoff_idx]), .real);
+                if (backoff_idx != backoffs.len - 1)
+                    backoff_idx += 1;
+
+                attempts += 1;
+
+                continue;
+            },
+            else => {
+                log.err("Something went wrong with the Noise handshake :(. What: {t}", .{err});
+                log.err("The connection will be closed.", .{});
+
+                return;
+            },
+        };
+
+        break;
+    }
+
+    attempts = 0;
+    failed = false;
+
+    defer session.deinit();
+
+    try self.processPackets(rdr, writer, &session);
 }
 
 /// Starts the Network workers. Blocking. May be cancelled as required.
 pub fn start(self: *Network) void {
+    if (self.to_connect.len >= 1) {
+        log.debug("Sending outbound connection requests to {d} peers", .{self.to_connect.len});
+    }
+
+    for (self.to_connect) |connectable| {
+        self.tasks.concurrent(self.io, connectToPeer, .{ self, connectable }) catch unreachable;
+    }
+
     self.start_task = self.io.concurrent(acceptConnections, .{self}) catch unreachable;
     log.debug("Started accepting connections", .{});
     _ = self.start_task.await(self.io);
@@ -125,6 +259,7 @@ pub fn deinit(self: *Network) void {
 /// The peer has our pubkey already. Set in the configs out of band. So it should encrypt a message.
 fn handleConnectionRw(self: *Network, rdr: *Io.Reader, writer: *Io.Writer) !void {
     const alloc = self.arena.allocator();
+    _ = alloc; // autofix
 
     // The peer connecting is initiator. Setup a noise session.
     var session = NoiseSession.init(
@@ -149,6 +284,13 @@ fn handleConnectionRw(self: *Network, rdr: *Io.Reader, writer: *Io.Writer) !void
     };
 
     defer session.deinit();
+
+    try self.processPackets(rdr, writer, &session);
+}
+
+fn processPackets(self: *Network, rdr: *Io.Reader, writer: *Io.Writer, session: *NoiseSession) !void {
+    _ = writer; // autofix
+    const alloc = self.arena.allocator();
 
     while (true) {
         const packet = session.recvT(Packet, rdr, alloc) catch |err| {
@@ -221,6 +363,10 @@ pub const Peer = struct {
 
     /// A nickname for the remote peer.
     nickname: []const u8,
+
+    /// The IP address of the remote peer. Null if the remote should only
+    /// connect to this one.
+    addr: ?[]const u8,
 
     fixed: bool = false,
 
