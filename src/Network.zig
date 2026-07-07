@@ -121,8 +121,11 @@ pub fn init(io: Io, arena: *Arena, identity: Identity, config: Config) !Network 
 }
 
 /// Attempts to connect to a peer using some kind of exponential backoff.
-fn connectToPeer(self: *Network, peer: Peer) !void {
-    var addr = try Io.net.IpAddress.parseLiteral(peer.addr.?);
+fn connectToPeer(self: *Network, peer: Peer) error{Canceled}!void {
+    var addr = Io.net.IpAddress.parseLiteral(peer.addr.?) catch |err| {
+        log.err("Invalid address `{s}` for peer `{s}`: {t}. Not connecting.", .{ peer.addr.?, peer.nickname, err });
+        return;
+    };
     if (addr.getPort() == 0) addr.setPort(DEFAULT_NET_PORT);
     var stream: Io.net.Stream = undefined;
     var failed: bool = false;
@@ -198,13 +201,17 @@ fn connectToPeer(self: *Network, peer: Peer) !void {
                     failed = true;
                     log.warn("Peer `{s}` does not have this machines public key. Copy the following line to your peers config. Will retry in 30s", .{peer.nickname});
                     const size = std.base64.standard.Encoder.calcSize(self.identity.public_key.len);
-                    const buf = try self.arena.allocator().alloc(u8, size);
-                    defer self.arena.allocator().free(buf);
+                    const buf = self.arena.allocator().alloc(u8, size) catch &.{};
 
-                    const b64_pk = b64.Encoder.encode(buf, &self.identity.public_key);
-                    log.info("pubkey = {s}", .{b64_pk});
+                    // Tbh allocation failures seem pretty fatal to me, but I
+                    // am just trying to please the compiler.
+                    if (buf.len > 0) {
+                        defer self.arena.allocator().free(buf);
+                        const b64_pk = b64.Encoder.encode(@constCast(buf), &self.identity.public_key);
+                        log.info("pubkey = {s}", .{b64_pk});
+                    }
                 } else {
-                    log.debug("Peer `{s}` still does not have this machines public key. Attempt {d}. Retrying soon...", .{ attempts, peer.nickname });
+                    log.debug("Peer `{s}` still does not have this machines public key. Attempt {d}. Retrying soon...", .{ peer.nickname, attempts });
                 }
 
                 try self.io.sleep(.fromSeconds(backoffs[backoff_idx]), .real);
@@ -231,7 +238,11 @@ fn connectToPeer(self: *Network, peer: Peer) !void {
 
     defer session.deinit();
 
-    try self.processPackets(rdr, writer, &session);
+    self.processPackets(rdr, writer, &session) catch |err| {
+        log.err("Processing packets failed. Reason: {t}", .{err});
+
+        return;
+    };
 }
 
 /// Starts the Network workers. Blocking. May be cancelled as required.
