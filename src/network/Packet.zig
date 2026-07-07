@@ -12,6 +12,8 @@
 // GNU General Public License for more details.
 
 //! Packets for the Network protocol.
+//!
+//! TODO: Packetise large payloads.
 
 const std = @import("std");
 const Io = std.Io;
@@ -31,13 +33,9 @@ payload: Payload,
 
 pub const Payload = struct {};
 
-/// User should free returned packet when no longer needed e.g. after sending.
-/// Perhaps use an Arena to handle this for you.
-pub fn fromReader(rdr: *Io.Reader, allocator: Allocator) !Packet {
-    const packet = try Serde.msgpack.fromReader(Packet, allocator, rdr);
+pub fn validate(self: *const Packet) bool {
+    if (!std.mem.eql(u8, self.magic, MAGIC))
+        return false;
 
-    if (!std.mem.eql(u8, packet.magic, MAGIC))
-        return error.InvalidMagic;
-
-    return packet;
+    return true;
 }
