@@ -15,13 +15,6 @@ const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
-const build_options = @import("options");
-const clap = @import("clap");
-const zclip = @import("zclip");
-const Clip = zclip.Clip;
-const Clipboard = zclip.Clipboard;
-const Command = Clipboard.Command;
-
 const Cli = @import("Cli.zig");
 const Client = @import("Client.zig");
 const Config = @import("Config.zig");
@@ -108,7 +101,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
 
     if (cfg.net.peers) |peers| {
         for (peers) |*peer| {
-            peer.fix(arena) catch |err| {
+            peer.fix(&arena) catch |err| {
                 log.err("Could not use configured peer \"{s}\". Reason: {t}", .{ peer.nickname, err });
                 // log.info("To add a peer, try `zclip client peer nickame public_key`", .{}); TODO: Add this for fun.
                 // In all seriousness if I want the Daemon to run as a systemd service, then I will need an easy way
@@ -125,7 +118,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     switch (cli_args.mode) {
         .Daemon => {
             try select.concurrent(.daemon, runDaemon, .{
-                arena,
+                &arena,
                 ident,
                 Daemon.Opts{
                     .socket_path = socket_path,
