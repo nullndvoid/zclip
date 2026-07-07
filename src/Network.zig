@@ -75,8 +75,7 @@ fn collectPeers(identity: Identity, peers: []const Peer, alloc: Allocator) !stru
     var to_connect_al = std.ArrayList(Peer).empty;
 
     for (peers) |peer| {
-        if (!peer.fixed)
-            @panic("This is a bug. Peers public keys should be b64 decoded already.");
+        if (!peer.fixed) continue; // Skip broken peers.
         try hashmap.put(peer.pubkey, peer.nickname);
         try set.put(peer.nickname, {});
 
@@ -379,6 +378,7 @@ pub const Peer = struct {
     /// connect to this one.
     addr: ?[]const u8,
 
+    /// This can be left set if the config is broken for a peer.
     fixed: bool = false,
 
     pub fn fix(self: *Peer, arena: *Arena) !void {
