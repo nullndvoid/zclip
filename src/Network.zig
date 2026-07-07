@@ -23,9 +23,9 @@ const b64 = std.base64.standard;
 
 const Serde = @import("serde");
 
-const Packet = @import("network/Packet.zig");
 pub const Identity = @import("network/Identity.zig");
 const NoiseSession = @import("network/NoiseSession.zig");
+const Packet = @import("network/Packet.zig");
 
 const log = std.log.scoped(.net);
 
@@ -190,7 +190,7 @@ pub const Peer = struct {
         const pubkey: []u8 = try arena.allocator().alloc(u8, len);
         errdefer arena.allocator().free(pubkey);
 
-        try b64.Decoder.decode(&pubkey, self.pubkey);
+        try b64.Decoder.decode(pubkey, self.pubkey);
 
         self.fixed = true;
         self.pubkey = pubkey;
