@@ -238,16 +238,24 @@ fn validatePositionals(comptime T: type) void {
 
     validateStruct(T, positionals);
 
-    const fields = @typeInfo(Positionals).@"struct".fields;
+    const info = @typeInfo(Positionals).@"struct";
 
-    inline for (fields, 0..) |pf, idx| {
-        if (!@hasField(T, pf.name))
-            complain("{s}.positionals: got non existant field {s}", .{ typeName(T), pf.name });
+    if (!info.is_tuple)
+        complain("{s}.positionals: this should be a tuple!\ni.e. positionals = .{ .name, .public_key, .favourite_colour }", .{});
 
-        if (pf.type != @EnumLiteral())
+    inline for (info.fields, 0..) |pf, idx| {
+        // i.e. .@"0" = .bob, this would give us .bob as @EnumLiteral().
+        const field = @field(Positionals, pf.name);
+
+        if (@TypeOf(field) != @EnumLiteral())
             complain("{s} positional {s} should be of type @EnumLiteral(), i.e. positionals = .{ .field, .next_field }", .{ typeName(T), pf.name });
 
-        validatePositionalFieldType(T, pf.name, fields, idx);
+        const field_name = @tagName(field);
+
+        if (!@hasField(T, @tagName(field)))
+            complain("{s}.positionals: got non existant field {s}", .{ typeName(T), pf.name });
+
+        validatePositionalFieldType(T, field_name, info.fields.len, idx);
     }
 }
 
@@ -265,11 +273,11 @@ fn isVariadicPositional(comptime T: type, comptime field_name: [:0]const u8) boo
     }
 }
 
-fn validatePositionalFieldType(comptime T: type, comptime field_name: [:0]const u8, comptime fields: []const Type.StructField, idx: usize) void {
+fn validatePositionalFieldType(comptime T: type, comptime field_name: [:0]const u8, comptime n_fields: usize, idx: usize) void {
     const field = @field(T, field_name);
     const Field = @TypeOf(field);
 
-    if (idx != fields.len - 1 and isVariadicPositional(T, field_name)) {
+    if (idx != n_fields - 1 and isVariadicPositional(T, field_name)) {
         complain("{s} variadic positionals ({s}) are only allowed in the last slot!", .{ typeName(T), field_name });
     }
 
