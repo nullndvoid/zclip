@@ -119,69 +119,76 @@ pub fn init(io: Io, arena: *Arena, identity: Identity, config: Config) !Network 
     };
 }
 
-/// Attempts to connect to a peer using some kind of exponential backoff.
+const Backoff = struct {
+    const delays_s = [_]i64{ 1, 3, 5, 10, 20, 30 };
+
+    failed: bool = false,
+    delay_idx: usize = 0,
+    attempts: usize = 1,
+
+    /// Sleeps for the current delay, then advances to the next one.
+    fn wait(self: *Backoff, io: Io) error{Canceled}!void {
+        try io.sleep(.fromSeconds(delays_s[self.delay_idx]), .real);
+        if (self.delay_idx != delays_s.len - 1)
+            self.delay_idx += 1;
+
+        self.attempts += 1;
+    }
+
+    /// Jumps straight to the maximum delay.
+    fn saturate(self: *Backoff) void {
+        self.delay_idx = delays_s.len - 1;
+    }
+
+    fn maxDelaySeconds() i64 {
+        return delays_s[delays_s.len - 1];
+    }
+};
+
+fn connectWithBackoff(self: *Network, addr: Io.net.IpAddress, peer: Peer, backoff: *Backoff) error{Canceled}!Io.net.Stream {
+    while (true) {
+        return addr.connect(self.io, .{ .mode = .stream }) catch |err| switch (err) {
+            error.Canceled => return error.Canceled,
+            else => {
+                if (!backoff.failed) {
+                    backoff.failed = true;
+                    log.warn("Cannot reach `{s}`. Retrying...", .{peer.nickname});
+                } else {
+                    log.debug("Cannot reach `{s}`. Attempt {d}. Retrying...", .{ peer.nickname, backoff.attempts });
+                }
+
+                try backoff.wait(self.io);
+                continue;
+            },
+        };
+    }
+}
+
+/// Attempts to connect to a peer, retrying with backoff, then services the
+/// connection until it closes. Only fails on cancellation; anything fatal for
+/// this one peer is logged and gives up quietly.
 fn connectToPeer(self: *Network, peer: Peer) error{Canceled}!void {
     var addr = Io.net.IpAddress.parseLiteral(peer.addr.?) catch |err| {
         log.err("Invalid address `{s}` for peer `{s}`: {t}. Not connecting.", .{ peer.addr.?, peer.nickname, err });
         return;
     };
     if (addr.getPort() == 0) addr.setPort(DEFAULT_NET_PORT);
-    var stream: Io.net.Stream = undefined;
-    var failed: bool = false;
-    const backoffs = [_]i64{
-        1,
-        3,
-        5,
-        10,
-        20,
-        30,
-    };
-    var backoff_idx: usize = 0;
-    var attempts: usize = 1;
+
+    var backoff = Backoff{};
 
     while (true) {
-        stream = addr.connect(self.io, .{ .mode = .stream }) catch |err| {
-            switch (err) {
-                error.Canceled => return,
-                else => {
-                    if (!failed) {
-                        failed = true;
-                        log.warn("Cannot reach `{s}`. Retrying...", .{peer.nickname});
-                    } else {
-                        log.debug("Cannot reach `{s}`. Attempt {d}. Retrying...", .{ peer.nickname, attempts });
-                    }
+        const stream = try self.connectWithBackoff(addr, peer, &backoff);
 
-                    try self.io.sleep(.fromSeconds(backoffs[backoff_idx]), .real);
-                    if (backoff_idx != backoffs.len - 1)
-                        backoff_idx += 1;
+        var read_buf: [4096]u8 = undefined;
+        var write_buf: [4096]u8 = undefined;
 
-                    attempts += 1;
+        var sock_rdr = stream.reader(self.io, &read_buf);
+        var sock_writer = stream.writer(self.io, &write_buf);
 
-                    continue;
-                },
-            }
-        };
+        const rdr = &sock_rdr.interface;
+        const writer = &sock_writer.interface;
 
-        break;
-    }
-
-    attempts = 0;
-    failed = false;
-
-    var read_buf: [4096]u8 = undefined;
-    var write_buf: [4096]u8 = undefined;
-
-    var sock_rdr = stream.reader(self.io, &read_buf);
-    var sock_writer = stream.writer(self.io, &write_buf);
-
-    const rdr = &sock_rdr.interface;
-    const writer = &sock_writer.interface;
-
-    // Setup a noise session.
-    var session: NoiseSession = undefined;
-
-    while (true) {
-        session = NoiseSession.init(
+        var session = NoiseSession.init(
             self.io,
             self.arena.allocator(),
             rdr,
@@ -193,55 +200,42 @@ fn connectToPeer(self: *Network, peer: Peer) error{Canceled}!void {
                 .initiator = true,
             },
         ) catch |err| switch (err) {
-            error.UnknownPeer => return,
             error.PeerDoesNotHoldPubkey => {
-                // Since the remote peer might fix their config. Warn and jump to max increment.
-                if (!failed) {
-                    failed = true;
-                    log.warn("Peer `{s}` does not have this machines public key. Copy the following line to your peers config. Will retry in 30s", .{peer.nickname});
-                    const size = std.base64.standard.Encoder.calcSize(self.identity.public_key.len);
-                    const buf = self.arena.allocator().alloc(u8, size) catch &.{};
+                stream.close(self.io);
 
-                    // Tbh allocation failures seem pretty fatal to me, but I
-                    // am just trying to please the compiler.
-                    if (buf.len > 0) {
-                        defer self.arena.allocator().free(buf);
-                        const b64_pk = b64.Encoder.encode(@constCast(buf), &self.identity.public_key);
-                        log.info("pubkey = {s}", .{b64_pk});
-                    }
+                // The remote peer might fix their config, so keep retrying at
+                // the maximum interval.
+                if (!backoff.failed) {
+                    log.warn("Peer `{s}` does not have this machines public key. Copy the following line to your peers config. Will retry every {d}s", .{ peer.nickname, Backoff.maxDelaySeconds() });
+
+                    var buf: [b64.Encoder.calcSize(self.identity.public_key.len)]u8 = undefined;
+                    const b64_pk = b64.Encoder.encode(&buf, &self.identity.public_key);
+                    log.info("pubkey = {s}", .{b64_pk});
                 } else {
-                    log.debug("Peer `{s}` still does not have this machines public key. Attempt {d}. Retrying soon...", .{ peer.nickname, attempts });
+                    log.debug("Peer `{s}` still does not have this machines public key. Attempt {d}. Retrying soon...", .{ peer.nickname, backoff.attempts });
                 }
 
-                try self.io.sleep(.fromSeconds(backoffs[backoff_idx]), .real);
-                if (backoff_idx != backoffs.len - 1)
-                    backoff_idx += 1;
-
-                attempts += 1;
-
+                backoff.failed = true;
+                backoff.saturate();
+                try backoff.wait(self.io);
                 continue;
             },
             else => {
-                log.err("Something went wrong with the Noise handshake :(. What: {t}", .{err});
-                log.err("The connection will be closed.", .{});
-
+                log.err("Noise handshake with peer `{s}` failed: {t}. Closing the connection and giving up.", .{ peer.nickname, err });
+                stream.close(self.io);
                 return;
             },
         };
 
-        break;
-    }
+        defer session.deinit();
+        defer stream.close(self.io);
 
-    attempts = 0;
-    failed = false;
-
-    defer session.deinit();
-
-    self.processPackets(rdr, writer, &session) catch |err| {
-        log.err("Processing packets failed. Reason: {t}", .{err});
+        self.processPackets(rdr, writer, &session) catch |err| {
+            log.err("Processing packets failed. Reason: {t}", .{err});
+        };
 
         return;
-    };
+    }
 }
 
 /// Starts the Network workers. Blocking. May be cancelled as required.
