@@ -11,6 +11,8 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 // GNU General Public License for more details.
 
+const builtin = @import("std").builtin;
+const Type = builtin.Type;
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -20,6 +22,8 @@ const build_options = @import("options");
 const clap = @import("clap");
 const zclip = @import("zclip");
 
+pub const Parser = @import("cli/Parser.zig");
+pub const Validate = @import("cli/Validate.zig");
 const Network = @import("Network.zig");
 
 const SubCommands = enum {
@@ -37,102 +41,104 @@ const main_parsers = .{
 // get the return type of `clap.parse` and `clap.parseEx`.
 const MainArgs = clap.ResultEx(clap.Help, &params, main_parsers);
 
-pub fn setupAndParseArgs(io: Io, arena: *ArenaAllocator, args: std.process.Args, opts: *CliOpts) !void {
-    const alloc = arena.allocator();
-    var iter = try args.iterateAllocator(alloc);
-    defer iter.deinit();
+// pub fn setupAndParseArgs(io: Io, arena: *ArenaAllocator, args: std.process.Args, opts: *CliOpts) !void {
+//     Validate.validate(CliOpts);
 
-    _ = iter.next();
+//     const alloc = arena.allocator();
+//     var iter = try args.iterateAllocator(alloc);
+//     defer iter.deinit();
 
-    var stderr_buf: [1024]u8 = undefined;
-    var stderr_file = Io.File.stderr();
+//     _ = iter.next();
 
-    var file_writer = stderr_file.writer(io, &stderr_buf);
-    var writer = &file_writer.interface;
+//     var stderr_buf: [1024]u8 = undefined;
+//     var stderr_file = Io.File.stderr();
 
-    var diag: clap.Diagnostic = .{};
-    var res = clap.parseEx(
-        clap.Help,
-        &params,
-        main_parsers,
-        &iter,
-        .{
-            .diagnostic = &diag,
-            .allocator = alloc,
-            // We want to stop at the first positional since it is a subcommand.
-            .terminating_positional = 0,
-        },
-    ) catch |err| {
-        try diag.reportToFile(io, .stderr(), err);
-        return err;
-    };
-    defer res.deinit();
+//     var file_writer = stderr_file.writer(io, &stderr_buf);
+//     var writer = &file_writer.interface;
 
-    if (res.args.help != 0) {
-        try printHelp(writer, params[0..], .{});
+//     var diag: clap.Diagnostic = .{};
+//     var res = clap.parseEx(
+//         clap.Help,
+//         &params,
+//         main_parsers,
+//         &iter,
+//         .{
+//             .diagnostic = &diag,
+//             .allocator = alloc,
+//             // We want to stop at the first positional since it is a subcommand.
+//             .terminating_positional = 0,
+//         },
+//     ) catch |err| {
+//         try diag.reportToFile(io, .stderr(), err);
+//         return err;
+//     };
+//     defer res.deinit();
 
-        opts.should_exit = true;
-        return;
-    }
+//     if (res.args.help != 0) {
+//         try printHelp(writer, params[0..], .{});
 
-    if (res.args.version != 0) {
-        if (build_options.git_rev) |rev| {
-            try writer.print(
-                "zclip {s} ({s})\n",
-                .{ build_options.version, rev },
-            );
-        } else {
-            try writer.print(
-                "zclip {s}\n",
-                .{build_options.version},
-            );
-        }
+//         opts.should_exit = true;
+//         return;
+//     }
 
-        try writer.flush();
+//     if (res.args.version != 0) {
+//         if (build_options.git_rev) |rev| {
+//             try writer.print(
+//                 "zclip {s} ({s})\n",
+//                 .{ build_options.version, rev },
+//             );
+//         } else {
+//             try writer.print(
+//                 "zclip {s}\n",
+//                 .{build_options.version},
+//             );
+//         }
 
-        opts.should_exit = true;
-        return;
-    }
+//         try writer.flush();
 
-    if (res.args.verbose != 0) {
-        opts.verbose = true;
-    }
+//         opts.should_exit = true;
+//         return;
+//     }
 
-    if (res.args.config) |cfg| {
-        opts.config_path = cfg;
-    }
+//     if (res.args.verbose != 0) {
+//         opts.verbose = true;
+//     }
 
-    if (res.args.data) |data| {
-        opts.data_dir = data;
-    }
+//     if (res.args.config) |cfg| {
+//         opts.config_path = cfg;
+//     }
 
-    const mode = res.positionals[0];
-    if (mode == null) {
-        try printHelp(writer, params[0..], .{});
-        opts.should_exit = true;
+//     if (res.args.data) |data| {
+//         opts.command.?.daemon. = data;
+//     }
 
-        return;
-    }
+//     const mode = res.positionals[0];
+//     if (mode == null) {
+//         try printHelp(writer, params[0..], .{});
+//         opts.should_exit = true;
 
-    switch (mode.?) {
-        .client => {
-            opts.mode = .Client;
+//         return;
+//     }
 
-            if (try parseClientArgs(io, alloc, &iter, res, opts, writer)) {
-                opts.should_exit = true;
-                return;
-            }
-        },
-        .daemon => {
-            opts.mode = .Daemon;
+//     switch (mode.?) {
+//         .client => {
+//             opts.mode = .Client;
 
-            if (try parseDaemonArgs(io, alloc, &iter, res, opts, writer)) {
-                opts.should_exit = true;
-                return;
-            }
-        },
-    }
-}
+//             if (try parseClientArgs(io, alloc, &iter, res, opts, writer)) {
+//                 opts.should_exit = true;
+//                 return;
+//             }
+//         },
+//         .daemon => {
+//             opts.mode = .Daemon;
+
+//             if (try parseDaemonArgs(io, alloc, &iter, res, opts, writer)) {
+//                 opts.should_exit = true;
+//                 return;
+//             }
+//         },
+//     }
+// }
 
 /// TODO: Extend the client to take a variety of subcommands. Returns true if we should exit.
 fn parseClientArgs(io: Io, alloc: Allocator, iter: *std.process.Args.Iterator, _: MainArgs, opts: *CliOpts, writer: *Io.Writer) !bool {
@@ -226,7 +232,7 @@ fn parseDaemonArgs(io: Io, alloc: Allocator, iter: *std.process.Args.Iterator, _
     }
 
     if (res.args.@"bind-addr") |addr| {
-        opts.bind_addr = addr;
+        opts.bind_addr = .{ .addr = addr };
     }
 
     return false;
@@ -278,7 +284,7 @@ const params = clap.parseParamsComptime(
     \\ -v, --verbose        Set the default log level to debug
     \\ -c, --config  <str>  Set a path to the configuration file
     \\ -d, --data    <str>  Set a path to the data directory
-    \\ <command>            This should be client or daemon
+    \\ <command>            Subcommands: peer, daemon
 );
 
 pub const Mode = enum {
@@ -290,6 +296,41 @@ pub const Mode = enum {
 
 const IS_DEBUG = @import("builtin").mode == .Debug;
 
+pub const DaemonOpts = struct {
+    /// The path to the data directory to use.
+    data_dir: ?[]const u8 = null,
+
+    pub const help = .{
+        .data_dir = .{
+            .desc = "Set a path to the data directory",
+        },
+    };
+};
+
+pub const PeerOpts = struct {
+    action: ?union(enum) {
+        add: PeerAdd,
+        list: void,
+
+        pub const PeerAdd = struct {
+            name: []const u8,
+            pubkey: []const u8,
+
+            force: bool = false,
+
+            pub const positionals = .{
+                .name,
+                .pubkey,
+            };
+        };
+    },
+};
+
+const CliSubcommand = union(enum) {
+    daemon: DaemonOpts,
+    peer: PeerOpts,
+};
+
 pub const CliOpts = struct {
     /// Enables debug logging. Off by default in Release builds.
     /// This is false by default on other optimise modes.
@@ -297,12 +338,90 @@ pub const CliOpts = struct {
     mode: Mode = .Client,
     /// The path to the UNIX socket. Should override any config set if passed.
     socket_path: ?[]const u8 = null,
-    /// True when help or usage was printed etc.
+    /// True when help or usage was printed etc. TODO: Move to parser.
     should_exit: bool = false,
     /// The bind address to bind the Daemon to.
-    bind_addr: ?Io.net.IpAddress = null,
+    bind_addr: ?IpAddress = null,
     /// The config file path to use.
     config_path: ?[]const u8 = null,
-    /// The path to the data directory to use.
-    data_dir: ?[]const u8 = null,
+
+    command: ?CliSubcommand = null,
+
+    pub const help = .{
+        .usage = "usage: zclip [options] <command> [command options]",
+        .verbose = .{
+            .desc = "Set the default log level to debug",
+            .default = IS_DEBUG,
+        },
+        .mode = .{
+            .desc = "The selected subcommand",
+            .default = .Client,
+        },
+        .socket_path = .{
+            .desc = "The path to use for the UNIX socket, overriding any configured value",
+        },
+        .bind_addr = .{
+            .desc = "The address:port to bind the daemon to. If the port is empty, 48500 is used",
+        },
+        .config_path = .{
+            .desc = "Set a path to the configuration file",
+        },
+        .command = .{
+            .desc = "The command to use",
+        },
+    };
 };
+
+const IpAddress = struct {
+    addr: Io.net.IpAddress,
+
+    pub fn parse(ctx: *Parser.ParseCtx) !IpAddress {
+        _ = ctx; // autofix
+    }
+};
+
+// fn parseArgs(io: Io, arena: *ArenaAllocator, args: std.process.Args, opts: *CliOpts) !void {
+//     _ = io; // autofix
+//     _ = arena; // autofix
+//     _ = args; // autofix
+//     _ = opts; // autofix
+
+//     // Short, long, description. A struct is used to get the types of arguments.
+//     const root_flags = [_][3][]const u8{
+//         &.{ "", "version", "Show the version of the software" },
+//         &.{ "h", "help", "Show this help menu and exit" },
+//         &.{ "c", "config-path", "A path to the config file" },
+//         &.{ "d", "data-dir", "A path to the data directory" },
+//         &.{ "v", "verbose", "Log harder" },
+//         &.{ "s", "socket-path", "The path to use for the UNIX socket" },
+//         &.{ "b", "bind-address", "IP:PORT to bind the daemon to.\nIf port empty, 48500 is used." },
+//     };
+//     _ = root_flags; // autofix
+// }
+
+// const Diagnostics = struct {
+//     /// What went wrong.
+//     message: []const u8,
+//     /// The offending field.
+//     field: []const u8,
+
+//     should_free: bool = false,
+
+//     /// For allocation of the strings.
+//     alloc: Allocator,
+
+//     pub fn init(alloc: Allocator) Diagnostics {
+//         return .{
+//             .message = &.{},
+//             .field = &.{},
+//             .alloc = alloc,
+//         };
+//     }
+
+//     pub fn deinit(self: *Diagnostics) void {
+//         if (!self.should_free) return;
+
+//         self.alloc.free(self.message);
+//         self.alloc.free(self.field);
+//     }
+// };
