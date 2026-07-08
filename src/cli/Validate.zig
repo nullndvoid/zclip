@@ -253,7 +253,7 @@ fn validatePositionals(comptime T: type) void {
         const field_name = @tagName(field);
 
         if (!@hasField(T, @tagName(field)))
-            complain("{s}.positionals: got non existant field {s}", .{ typeName(T), pf.name });
+            complain("{s}.positionals: got non existant field {s}", .{ typeName(T), @tagName(field) });
 
         validatePositionalFieldType(T, field_name, info.fields.len, idx);
     }
