@@ -148,6 +148,8 @@ pub fn validate(comptime T: type) void {
 /// Then I will worry about the rest later. This will compile error for invalid inputs.
 /// Allows tuples in order to handle a list of args with various types.
 fn validateStruct(comptime T: type) void {
+    var got_union = false;
+
     switch (@typeInfo(T)) {
         .@"struct" => |data| {
             inline for (data.fields, 0..) |field, i| {
@@ -163,7 +165,9 @@ fn validateStruct(comptime T: type) void {
                 if (!data.is_tuple and std.mem.containsAtLeast(u8, field.name, 1, " "))
                     complain("Field names ({s}) must not contain spaces!", .{field_name});
 
-                validateField(field.type, field_name);
+                // We should see an error if there was a duplicate union, so we
+                // can take this to be the only one (if present).
+                validateField(field.type, field_name, &got_union);
             }
 
             if (@hasDecl(T, "help"))
@@ -171,13 +175,62 @@ fn validateStruct(comptime T: type) void {
 
             if (@hasDecl(T, "positionals"))
                 validatePositionals(T);
+
+            // Don't bother scanning if not found.
+            if (!got_union) return;
+
+            inline for (data.fields) |field| {
+                // if (@typeInfo(field.type) != ) continue;
+
+                switch (@typeInfo(field.type)) {
+                    .optional => |opt| {
+                        switch (@typeInfo(opt.child)) {
+                            .@"union" => validateSubcommandUnion(T, opt.child),
+                            else => continue,
+                        }
+                    },
+                    else => continue,
+                }
+
+                // Validate subcommand union.
+
+            }
         },
         else => complain("{s} was not a struct. This is a bug.", .{typeName(T)}),
     }
 }
 
-fn validateField(comptime T: type, comptime name: [:0]const u8) void {
+fn validateSubcommandUnion(comptime T: type, comptime F: type) void {
+    switch (@typeInfo(F)) {
+        .@"union" => |uni| {
+            if (uni.tag_type == null)
+                complain("{s}: subcommand union must be tagged!", .{typeName(T)});
+
+            inline for (uni.fields) |f| {
+                switch (@typeInfo(f.type)) {
+                    .@"struct" => validateStruct(f.type),
+                    .void => {},
+                    else => complain("{s}: subcommand union tag {s} should be void or struct.", .{ typeName(T), f.name }),
+                }
+            }
+        },
+        else => complain("{s}: unexpected {s} where union(enum) was expected. This may be a bug.", .{ typeName(T), typeName(F) }),
+    }
+}
+
+fn validateField(
+    comptime T: type,
+    comptime name: [:0]const u8,
+    got_union: *bool,
+) void {
+    // Used for recursive calls. Child structs can of course have their own
+    // subcommands.
+    var got_union_nested = false;
+
     switch (@typeInfo(T)) {
+        .@"union" => {
+            complain("{s}: subcommand union {s} must be optional!", .{ typeName(T), name });
+        },
         .bool, .int => {},
         // Read as tag name, TagName or the backing integer.
         .@"enum" => {},
@@ -190,7 +243,14 @@ fn validateField(comptime T: type, comptime name: [:0]const u8) void {
             if (@typeInfo(opt.child) == .optional)
                 complain("{s}: nested optionals are not supported.", .{name});
 
-            validateField(opt.child, name);
+            if (@typeInfo(opt.child) == .@"union") {
+                if (got_union.*)
+                    complain("{s}: unexpected union. Only one is allowed.", .{typeName(T)});
+
+                got_union.* = true;
+
+                return;
+            }
         },
         .pointer => |ptr| validatePtr(T, ptr, name),
         .array => |arr| {
@@ -199,7 +259,7 @@ fn validateField(comptime T: type, comptime name: [:0]const u8) void {
                     complain("{s}: only 0 sentinels on u8 arrays are supported.", .{name});
             }
 
-            validateField(arr.child, name);
+            validateField(arr.child, name, &got_union_nested);
 
             switch (@typeInfo(arr.child)) {
                 .array, .pointer => complain(
@@ -236,8 +296,6 @@ fn validatePositionals(comptime T: type) void {
     const positionals = @field(T, "positionals");
     const Positionals = @TypeOf(positionals);
 
-    validateStruct(T, positionals);
-
     const info = @typeInfo(Positionals).@"struct";
 
     if (!info.is_tuple)
@@ -245,7 +303,7 @@ fn validatePositionals(comptime T: type) void {
 
     inline for (info.fields, 0..) |pf, idx| {
         // i.e. .@"0" = .bob, this would give us .bob as @EnumLiteral().
-        const field = @field(Positionals, pf.name);
+        const field = @field(positionals, pf.name);
 
         if (@TypeOf(field) != @EnumLiteral())
             complain("{s} positional {s} should be of type @EnumLiteral(), i.e. positionals = .{ .field, .next_field }", .{ typeName(T), pf.name });
@@ -262,27 +320,31 @@ fn validatePositionals(comptime T: type) void {
 /// True if a field is of type []T for any T that is not u8.
 /// For obvious reasons these are only allowed in the last slot.
 fn isVariadicPositional(comptime T: type, comptime field_name: [:0]const u8) bool {
-    const field = @field(T, field_name);
-    const Field = @TypeOf(field);
-
-    switch (@typeInfo(Field)) {
-        .pointer => |ptr| {
-            return (ptr.size == .slice) and (ptr.child != u8);
-        },
+    return switch (@typeInfo(@FieldType(T, field_name))) {
+        .pointer => |ptr| (ptr.size == .slice) and (ptr.child != u8),
         else => false,
-    }
+    };
 }
 
 fn validatePositionalFieldType(comptime T: type, comptime field_name: [:0]const u8, comptime n_fields: usize, idx: usize) void {
-    const field = @field(T, field_name);
-    const Field = @TypeOf(field);
+    const Field = @FieldType(T, field_name);
 
     if (idx != n_fields - 1 and isVariadicPositional(T, field_name)) {
         complain("{s} variadic positionals ({s}) are only allowed in the last slot!", .{ typeName(T), field_name });
     }
 
-    // Stub for now. Should probably just call validateField?
-    switch (@typeInfo(Field)) {
-        else => complain("{s} positional type {s} not allowed.", .{ typeName(T), field_name }),
-    }
+    // A valueless positional is meaningless: bools stay as flags.
+    const Unwrapped = switch (@typeInfo(Field)) {
+        .optional => |opt| opt.child,
+        else => Field,
+    };
+
+    if (@typeInfo(Unwrapped) == .bool)
+        complain("{s}.{s}: bool positionals are not allowed. Use a flag instead.", .{ typeName(T), field_name });
+
+    var got_union = false;
+    validateField(Field, typeName(T) ++ "." ++ field_name, &got_union);
+
+    if (got_union)
+        complain("{s}.{s}: the subcommand union cannot be a positional!", .{ typeName(T), field_name });
 }
