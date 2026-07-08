@@ -60,6 +60,10 @@ fn validateHelp(comptime T: type, comptime fields: []const Type.StructField) voi
     const help = T.help;
     const Help = @TypeOf(help);
 
+    if (@hasField(Help, "help") or @hasField(Help, "h")) {
+        complain("{s}.help contains field for reserved help flag!", .{typeName(T)});
+    }
+
     if (@typeInfo(Help) != .@"struct")
         complain("{s}.help must be a struct value, e.g. `pub const help = .{{ ... }};`", .{typeName(T)});
 
@@ -170,6 +174,10 @@ pub fn positionalOrSubcom(comptime T: type) ParseMode {
 /// Allows tuples in order to handle a list of args with various types.
 fn validateStruct(comptime T: type) void {
     var got_union = false;
+
+    if (@hasField(T, "help") or @hasField(T, "h")) {
+        complain("{s} contains field for reserved help flag!", .{typeName(T)});
+    }
 
     switch (@typeInfo(T)) {
         .@"struct" => |data| {
@@ -330,6 +338,10 @@ fn validatePositionals(comptime T: type) void {
     const positionals = @field(T, "positionals");
     const Positionals = @TypeOf(positionals);
 
+    if (@hasField(Positionals, "help") or @hasField(Positionals, "h")) {
+        complain("{s} positionals contains field for reserved help flag!", .{typeName(T)});
+    }
+
     const info = @typeInfo(Positionals).@"struct";
 
     if (!info.is_tuple)
@@ -401,6 +413,10 @@ fn validateFlags(comptime T: type, _: []const Type.StructField) void {
 
     if (flags.is_tuple)
         complain("{s}: flags should be a struct with named fields!", .{typeName(T)});
+
+    if (@hasField(Flags, "help") or @hasField(Flags, "h")) {
+        complain("{s}: flags contains entry for reserved help flag!", .{typeName(T)});
+    }
 
     // Shorts must be unique across the whole struct, so the set lives out here.
     comptime var seen_shorts: []const u8 = &.{};

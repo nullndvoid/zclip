@@ -2,13 +2,15 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
+const Validate = @import("Validate.zig");
+
 /// I should add pretty error reporting and stuff like that.
 /// Report to *Io.Writer, File. Maybe get some colour codes in there
 /// if supported/desired. This should probably respect the common
 /// envvars for disabling colouring.
 ///
 /// Ensure you call `.deinit` once done with the data.
-const Diagnostics = struct {
+pub const Diagnostics = struct {
     message: []const u8,
 
     pub fn deinit(diag: *Diagnostics, ctx: *ParseCtx) void {
@@ -16,7 +18,7 @@ const Diagnostics = struct {
     }
 };
 
-const ArgsList = std.ArrayList([]const u8);
+pub const ArgsList = []const [:0]const u8;
 
 /// # Parse Context
 ///
@@ -27,7 +29,7 @@ const ArgsList = std.ArrayList([]const u8);
 ///
 /// Note that parse is guaranteed not to be called if there are no
 /// arguments left to parse.
-const ParseCtx = struct {
+pub const ParseCtx = struct {
     arena: ArenaAllocator,
     /// Args can be consumed by the parser.
     args: ArgsList,
@@ -63,3 +65,26 @@ const ParseCtx = struct {
         };
     }
 };
+
+pub fn parse(comptime T: type, args: []const [:0]const u8, alloc: Allocator, diag: ?*Diagnostics) !void {
+    Validate.validate(T);
+
+    const mode = Validate.positionalOrSubcom(T);
+
+    std.log.debug("mode: {t}", .{mode});
+
+    const ctx = ParseCtx.init(alloc, args, diag);
+    _ = ctx; // autofix
+}
+
+// argv_0 arg/positional/subcom...
+// if we see -- and not quoted, parse long flags for T
+// same goes for short flags
+// if a short flag is binary, next char should be a space/another flag short char.
+//
+
+// We can take:
+// -s (short flag)
+// --long-flag
+// subcommand/positional (select based on current T)
+// spaces? Should be handled by shell args.
