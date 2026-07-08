@@ -97,10 +97,44 @@ fn validateHelpForField(comptime T: type, comptime original: Type.StructField, c
 
     if (!has_default) return;
 
-    if (@TypeOf(entry.default) != original.type)
+    const EntryDefaultT = @TypeOf(entry.default);
+    const FieldT = original.type;
+
+    switch (@typeInfo(EntryDefaultT)) {
+        .enum_literal => {
+            const Target = switch (@typeInfo(FieldT)) {
+                .optional => |opt| opt.child,
+                else => FieldT,
+            };
+
+            if (@typeInfo(Target) != .@"enum")
+                complain("{s}.{s} help default is an enum literal, but the field type is {s}!", .{ typeName(T), original.name, typeName(FieldT) });
+
+            if (!@hasField(Target, @tagName(entry.default)))
+                complain("{s}.{s} help default `.{s}` is not a member of {s}!", .{ typeName(T), original.name, @tagName(entry.default), typeName(Target) });
+
+            return;
+        },
+        // Untyped literals: coercion failure here means the default doesn't fit the field type.
+        .comptime_int, .comptime_float, .null => {
+            const coerced: FieldT = entry.default;
+            _ = coerced;
+            return;
+        },
+        else => {},
+    }
+
+    // String literals are pointers to arrays, never exactly []const u8.
+    if (isString(EntryDefaultT)) {
+        const coerced: FieldT = entry.default;
+        _ = coerced;
+        return;
+    }
+
+    if (EntryDefaultT != FieldT)
         complain(
             "{s}.{s} help default is the wrong type! Expected `{s}` but got `{s}`.",
-            .{ typeName(T), original.name, typeName(original.type), typeName(@TypeOf(entry.default)) },
+            .{ typeName(T), original.name, typeName(original.type), typeName(EntryDefaultT) },
         );
 }
 
