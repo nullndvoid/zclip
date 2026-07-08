@@ -92,6 +92,9 @@ fn validateHelpForField(comptime T: type, comptime original: Type.StructField, c
 
     const has_default = @hasField(Entry, "default");
 
+    if (has_default and isSubcommandUnion(original.type))
+        complain("{s}.{s} help, default not allowed on subcommand unions!", .{ typeName(T), original.name });
+
     // Catch typos like `dsec` or `defualt` without looping: only desc and default are known.
     const known_fields = 1 + @as(usize, @intFromBool(has_default));
     if (@typeInfo(Entry).@"struct".fields.len > known_fields)
@@ -180,20 +183,10 @@ fn validateStruct(comptime T: type) void {
             if (!got_union) return;
 
             inline for (data.fields) |field| {
-                // if (@typeInfo(field.type) != ) continue;
-
-                switch (@typeInfo(field.type)) {
-                    .optional => |opt| {
-                        switch (@typeInfo(opt.child)) {
-                            .@"union" => validateSubcommandUnion(T, opt.child),
-                            else => continue,
-                        }
-                    },
-                    else => continue,
-                }
+                if (!isSubcommandUnion(field.type)) continue;
 
                 // Validate subcommand union.
-
+                validateSubcommandUnion(T, @typeInfo(field.type).optional.child);
             }
         },
         else => complain("{s} was not a struct. This is a bug.", .{typeName(T)}),
@@ -216,6 +209,17 @@ fn validateSubcommandUnion(comptime T: type, comptime F: type) void {
         },
         else => complain("{s}: unexpected {s} where union(enum) was expected. This may be a bug.", .{ typeName(T), typeName(F) }),
     }
+}
+
+/// Returns true if U is a subcommand union. Performs no validation, just ?union.
+fn isSubcommandUnion(comptime U: type) bool {
+    return switch (@typeInfo(U)) {
+        .optional => |opt| switch (@typeInfo(opt.child)) {
+            .@"union" => true,
+            else => false,
+        },
+        else => false,
+    };
 }
 
 fn validateField(
