@@ -28,12 +28,14 @@ fn complain(comptime fmt: [:0]const u8, comptime args: anytype) noreturn {
 /// True for string-ish types: u8 slices and pointers to u8 arrays (string literals).
 fn isString(comptime T: type) bool {
     return switch (@typeInfo(T)) {
+        .array => |arr| {
+            if (arr.child != u8) return false;
+            if (arr.sentinel()) |s| return s == 0;
+            return true;
+        },
         .pointer => |ptr| switch (ptr.size) {
             .slice => ptr.child == u8,
-            .one => switch (@typeInfo(ptr.child)) {
-                .array => |arr| arr.child == u8,
-                else => false,
-            },
+            .one => isString(ptr.child),
             else => false,
         },
         else => false,
@@ -197,10 +199,10 @@ fn validateField(comptime T: type, comptime name: [:0]const u8) void {
             validateField(arr.child, name);
 
             switch (@typeInfo(arr.child)) {
-                .array, .ptr => complain(
+                .array, .pointer => complain(
                     \\{s}: Nested sequences are not permitted, except [][]const u8,
                     \\but got [{d}]{s}. Consider using a struct with a parse method.
-                , .{ name, arr.len, arr.child }),
+                , .{ name, arr.len, @typeName(arr.child) }),
                 // Presumably handled by validateField.
                 else => {},
             }
