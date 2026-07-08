@@ -38,6 +38,12 @@ fn validateStruct(comptime T: type) void {
                     else
                         fieldNameStr(T, .{ .i = i });
 
+                if (std.mem.countScalar(u8, field.name, '=') != 0)
+                    complain("Field names ({s}) must not contain '='!", .{field_name});
+
+                if (!data.is_tuple and std.mem.countScalar(u8, field.name, ' ') != 0)
+                    complain("Field names ({s}) must not contain spaces!", .{field_name});
+
                 validateField(field.type, field_name);
             }
         },
