@@ -195,7 +195,7 @@ fn connectToPeer(self: *Network, peer: Peer) error{Canceled}!void {
             writer,
             self.identity,
             &self.peers,
-            null,
+            peer.pubkey,
             .{
                 .initiator = true,
             },
