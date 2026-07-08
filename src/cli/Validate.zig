@@ -425,6 +425,16 @@ fn validateFlags(comptime T: type, _: []const Type.StructField) void {
         if (!@hasField(T, f.name))
             complain("{s}.flags: unknown field name reference \"{s}\"", .{ typeName(T), f.name });
 
+        if (isSubcommandUnion(@FieldType(T, f.name)))
+            complain("{s}.flags.{s}: the subcommand union is not a flag!", .{ typeName(T), f.name });
+
+        if (@hasDecl(T, "positionals")) {
+            for (T.positionals) |p| {
+                if (std.mem.eql(u8, @tagName(p), f.name))
+                    complain("{s}.flags.{s}: positionals cannot have flag settings!", .{ typeName(T), f.name });
+            }
+        }
+
         // Check if this is a struct.
         const field = @field(T.flags, f.name);
         const Field = @TypeOf(field);
@@ -452,10 +462,18 @@ fn validateFlagsField(comptime T: type, comptime field_name: [:0]const u8, compt
             if (f.type != u8 and f.type != comptime_int)
                 complain("{s}: flags short field for {s} should be a char. TODO: support unicode codepoints", .{ typeName(T), field_name });
 
-            short = @field(@field(T.flags, field_name), "short");
+            const c: u8 = @field(@field(T.flags, field_name), "short");
 
-            if (short == 'h')
+            if (!std.ascii.isAlphanumeric(c))
+                complain("{s}: flags short field for {s} should be alphanumeric!", .{ typeName(T), field_name });
+
+            if (c == 'h')
                 complain("{s}: flags short field for {s} is reserved for -h/--help!", .{ typeName(T), field_name });
+
+            short = c;
+        } else {
+            // Catch typos like `shrot`: only short is known.
+            complain("{s}.flags.{s} has unknown field \"{s}\". Only `short` is recognized.", .{ typeName(T), field_name, f.name });
         }
     }
 
@@ -508,6 +526,22 @@ test "list flags" {
         ports: []const u16 = &.{},
         names: []const []const u8 = &.{},
         counts: [4]u32 = @splat(0),
+    });
+}
+
+test "flags decl with shorts" {
+    // Shorts on plain flags, coexisting with positionals on the same struct.
+    validate(struct {
+        name: []const u8,
+        config_path: ?[]const u8 = null,
+        verbose: bool = false,
+
+        pub const positionals = .{.name};
+
+        pub const flags = .{
+            .config_path = .{ .short = 'c' },
+            .verbose = .{ .short = 'v' },
+        };
     });
 }
 
