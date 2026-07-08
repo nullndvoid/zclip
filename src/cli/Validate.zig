@@ -560,21 +560,24 @@ test "positionals: trailing may have default" {
 }
 
 // Tests below this comment should cause a compiler error.
+const failing_tests = false;
 
-// test "disallow positionals and subcommands" {
-//     const Positionals = struct {
-//         name_one: []const u8,
-//         name_two: []const u8 = "Bob",
-//         cmd: ?union(enum) { do_thing: void },
+test "disallow positionals and subcommands" {
+    if (!failing_tests) return error.SkipZigTest;
 
-//         const Self = @This();
+    const Positionals = struct {
+        name_one: []const u8,
+        name_two: []const u8 = "Bob",
+        cmd: ?union(enum) { do_thing: void },
 
-//         pub const help = .{
-//             .name_two = .{ .desc = "The second name.", .default = "Bob" },
-//         };
+        const Self = @This();
 
-//         pub const positionals = .{ .name_one, .name_two };
-//     };
+        pub const help = .{
+            .name_two = .{ .desc = "The second name.", .default = "Bob" },
+        };
 
-//     validate(Positionals);
-// }
+        pub const positionals = .{ .name_one, .name_two };
+    };
+
+    validate(Positionals);
+}
