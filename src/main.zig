@@ -81,10 +81,14 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
 
     try select.concurrent(.signal, waitForInterrupt, .{});
 
-    const socket_path = cli_args.socket_path orelse try getSocketPath(arena.allocator(), minimal.environ);
+    const socket_path = cli_args.socket_path orelse
+        cfg.daemon.unix_socket_address orelse
+        cfg.client.unix_socket_address orelse
+        try getSocketPath(arena.allocator(), minimal.environ);
 
     // Get our own identity.
     const data_dir = cli_args.data_dir orelse
+        cfg.daemon.data_dir orelse
         try Network.Identity.getWellKnownDir(io, arena.allocator(), &envmap);
 
     const ident = try Network.Identity.getOrInit(
