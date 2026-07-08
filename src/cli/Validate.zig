@@ -182,6 +182,9 @@ fn validateStruct(comptime T: type) void {
             // Don't bother scanning if not found.
             if (!got_union) return;
 
+            if (@hasDecl(T, "positionals"))
+                complain("{s} cannot have positionals and subcommands at once!", .{typeName(T)});
+
             inline for (data.fields) |field| {
                 if (!isSubcommandUnion(field.type)) continue;
 
@@ -292,7 +295,13 @@ fn validatePtr(comptime T: type, comptime ptr: Type.Pointer, comptime name: [:0]
     }
 
     // []u8 and friends are strings; anything else is a list of readable values.
-    if (ptr.child != u8) validateField(ptr.child, name);
+    if (ptr.child == u8) return;
+
+    var got_union = false;
+    validateField(ptr.child, name, &got_union);
+
+    if (got_union)
+        complain("{s}: subcommand unions are not allowed inside lists!", .{name});
 }
 
 /// TODO: Allow repeated positionals only if output type is a slice or array?
@@ -330,11 +339,23 @@ fn isVariadicPositional(comptime T: type, comptime field_name: [:0]const u8) boo
     };
 }
 
+fn helpHasDefault(comptime T: type, comptime field_name: [:0]const u8) bool {
+    if (!@hasDecl(T, "help")) return false;
+    const help = T.help;
+    if (!@hasField(@TypeOf(help), field_name)) return false;
+
+    return @hasField(@TypeOf(@field(help, field_name)), "default");
+}
+
 fn validatePositionalFieldType(comptime T: type, comptime field_name: [:0]const u8, comptime n_fields: usize, idx: usize) void {
     const Field = @FieldType(T, field_name);
 
     if (idx != n_fields - 1 and isVariadicPositional(T, field_name)) {
         complain("{s} variadic positionals ({s}) are only allowed in the last slot!", .{ typeName(T), field_name });
+    }
+
+    if (idx != n_fields - 1 and helpHasDefault(T, field_name)) {
+        complain("{s}: defaults are only allowed for trailing positionals but default was set for {s}!", .{ typeName(T), field_name });
     }
 
     // A valueless positional is meaningless: bools stay as flags.
@@ -352,3 +373,208 @@ fn validatePositionalFieldType(comptime T: type, comptime field_name: [:0]const 
     if (got_union)
         complain("{s}.{s}: the subcommand union cannot be a positional!", .{ typeName(T), field_name });
 }
+
+// Passing tests for correct inputs only: invalid inputs `complain` at comptime,
+// which cannot be caught from a test.
+
+/// A stand-in for custom types like Cli.IpAddress.
+const TestAddr = struct {
+    host: []const u8 = "",
+    port: u16 = 0,
+
+    pub fn parse(ctx: anytype) !TestAddr {
+        _ = ctx;
+        return .{};
+    }
+};
+
+test "empty struct" {
+    validate(struct {});
+}
+
+test "scalar and string flags" {
+    validate(struct {
+        verbose: bool = false,
+        retries: u32 = 3,
+        offset: i64 = -1,
+        name: []const u8 = "",
+        config: ?[]const u8 = null,
+        tag: [:0]const u8 = "",
+        id: [8]u8 = @splat(0),
+    });
+}
+
+test "enum and custom parse-decl flags" {
+    validate(struct {
+        const Colour = enum { auto, always, never };
+
+        colour: Colour = .auto,
+        maybe_colour: ?Colour = null,
+        addr: TestAddr = .{},
+        maybe_addr: ?TestAddr = null,
+    });
+}
+
+test "list flags" {
+    validate(struct {
+        ports: []const u16 = &.{},
+        names: []const []const u8 = &.{},
+        counts: [4]u32 = @splat(0),
+    });
+}
+
+test "help decl with usage and defaults" {
+    validate(struct {
+        const Colour = enum { auto, always, never };
+
+        verbose: bool = false,
+        colour: Colour = .auto,
+        config: ?[]const u8 = null,
+        limit: u32 = 10,
+
+        pub const help = .{
+            .usage = "usage: test [options]",
+            .verbose = .{ .desc = "Log harder", .default = false },
+            .colour = .{ .desc = "When to use colour", .default = .auto },
+            .config = .{ .desc = "Path to the config file", .default = "~/.config/test" },
+            .limit = .{ .desc = "Maximum entries", .default = 10 },
+        };
+    });
+}
+
+test "positionals: single required" {
+    validate(struct {
+        name: []const u8,
+
+        pub const positionals = .{.name};
+    });
+}
+
+test "positionals: required, optional and flags mixed" {
+    validate(struct {
+        name: []const u8,
+        pubkey: []const u8,
+        alias: ?[]const u8 = null,
+        force: bool = false,
+
+        pub const positionals = .{ .name, .pubkey, .alias };
+    });
+}
+
+test "positionals: typed slots and variadic tail" {
+    validate(struct {
+        port: u16,
+        files: []const []const u8 = &.{},
+
+        pub const positionals = .{ .port, .files };
+    });
+}
+
+test "subcommands: simple subcommand router" {
+    validate(struct {
+        verbose: bool = false,
+
+        command: ?union(enum) {
+            run: struct {
+                fast: bool = false,
+            },
+            version: void,
+        } = null,
+    });
+}
+
+test "subcommands: nested tree with positionals, help and custom types" {
+    const PeerAdd = struct {
+        name: []const u8,
+        pubkey: []const u8,
+        force: bool = false,
+
+        pub const positionals = .{ .name, .pubkey };
+
+        pub const help = .{
+            .name = .{ .desc = "Display name for the peer" },
+            .pubkey = .{ .desc = "The peer's public key" },
+            .force = .{ .desc = "Overwrite an existing peer", .default = false },
+        };
+    };
+
+    const PeerOpts = struct {
+        action: ?union(enum) {
+            add: PeerAdd,
+            remove: struct {
+                name: []const u8,
+
+                pub const positionals = .{.name};
+            },
+            list: void,
+        } = null,
+    };
+
+    const DaemonOpts = struct {
+        bind_addr: ?TestAddr = null,
+        data_dir: ?[]const u8 = null,
+
+        pub const help = .{
+            .bind_addr = .{ .desc = "The address:port to bind to" },
+            .data_dir = .{ .desc = "Set a path to the data directory" },
+        };
+    };
+
+    const Root = struct {
+        verbose: bool = false,
+        config: ?[]const u8 = null,
+
+        command: ?union(enum) {
+            daemon: DaemonOpts,
+            peer: PeerOpts,
+        } = null,
+
+        pub const help = .{
+            .usage = "usage: tool [options] <command> [command options]",
+            .verbose = .{ .desc = "Log harder", .default = false },
+            .config = .{ .desc = "Path to the config file" },
+            .command = .{ .desc = "The subcommand to run" },
+        };
+    };
+
+    validate(Root);
+}
+
+test "positionals: trailing may have default" {
+    const Positionals = struct {
+        name_one: []const u8,
+        name_two: []const u8 = "Bob",
+
+        const Self = @This();
+
+        pub const help = .{
+            // Unfortunately there will be some duplication between field
+            // defaults and the help section. This should be fixed later.
+            .name_two = .{ .desc = "The second name.", .default = "Bob" },
+        };
+
+        pub const positionals = .{ .name_one, .name_two };
+    };
+
+    validate(Positionals);
+}
+
+// Tests below this comment should cause a compiler error.
+
+// test "disallow positionals and subcommands" {
+//     const Positionals = struct {
+//         name_one: []const u8,
+//         name_two: []const u8 = "Bob",
+//         cmd: ?union(enum) { do_thing: void },
+
+//         const Self = @This();
+
+//         pub const help = .{
+//             .name_two = .{ .desc = "The second name.", .default = "Bob" },
+//         };
+
+//         pub const positionals = .{ .name_one, .name_two };
+//     };
+
+//     validate(Positionals);
+// }
