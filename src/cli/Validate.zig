@@ -147,6 +147,24 @@ pub fn validate(comptime T: type) void {
     comptime validateStruct(T);
 }
 
+pub const ParseMode = enum {
+    Positional,
+    Subcommand,
+    Neither,
+};
+
+pub fn positionalOrSubcom(comptime T: type) ParseMode {
+    if (@hasDecl(T, "positionals")) return .Positional;
+
+    var got_union: bool = false;
+    inline for (@typeInfo(T).@"struct".fields) |f| {
+        comptime if (!isSubcommandUnion(f.type)) continue;
+        got_union = true;
+    }
+
+    return if (got_union) .Subcommand else .Neither;
+}
+
 /// I want to scan struct fields and check their types are valid as first pass.
 /// Then I will worry about the rest later. This will compile error for invalid inputs.
 /// Allows tuples in order to handle a list of args with various types.
@@ -178,6 +196,9 @@ fn validateStruct(comptime T: type) void {
 
             if (@hasDecl(T, "positionals"))
                 validatePositionals(T);
+
+            if (@hasDecl(T, "flags"))
+                validateFlags(T, data.fields);
 
             // Don't bother scanning if not found.
             if (!got_union) return;
@@ -372,6 +393,57 @@ fn validatePositionalFieldType(comptime T: type, comptime field_name: [:0]const 
 
     if (got_union)
         complain("{s}.{s}: the subcommand union cannot be a positional!", .{ typeName(T), field_name });
+}
+
+fn validateFlags(comptime T: type, _: []const Type.StructField) void {
+    const Flags = @TypeOf(T.flags);
+    const flags = @typeInfo(Flags).@"struct";
+
+    if (flags.is_tuple)
+        complain("{s}: flags should be a struct with named fields!", .{typeName(T)});
+
+    // Shorts must be unique across the whole struct, so the set lives out here.
+    comptime var seen_shorts: []const u8 = &.{};
+
+    for (flags.fields) |f| {
+        if (!@hasField(T, f.name))
+            complain("{s}.flags: unknown field name reference \"{s}\"", .{ typeName(T), f.name });
+
+        // Check if this is a struct.
+        const field = @field(T.flags, f.name);
+        const Field = @TypeOf(field);
+
+        switch (@typeInfo(Field)) {
+            .@"struct" => |s| {
+                if (validateFlagsField(T, f.name, s)) |short| {
+                    if (std.mem.indexOfScalar(u8, seen_shorts, short) != null)
+                        complain("{s}: duplicate flag short field '{c}' for field {s}", .{ typeName(T), short, f.name });
+
+                    seen_shorts = seen_shorts ++ .{short};
+                }
+            },
+            else => complain("{s}.flags.{s}: This should be a struct! i.e. .field = .{ .short = 'f' }", .{ typeName(T), f.name }),
+        }
+    }
+}
+
+/// Returns the short char if the entry declares one.
+fn validateFlagsField(comptime T: type, comptime field_name: [:0]const u8, comptime s: Type.Struct) ?u8 {
+    var short: ?u8 = null;
+
+    inline for (s.fields) |f| {
+        if (std.mem.eql(u8, f.name, "short")) {
+            if (f.type != u8 and f.type != comptime_int)
+                complain("{s}: flags short field for {s} should be a char. TODO: support unicode codepoints", .{ typeName(T), field_name });
+
+            short = @field(@field(T.flags, field_name), "short");
+
+            if (short == 'h')
+                complain("{s}: flags short field for {s} is reserved for -h/--help!", .{ typeName(T), field_name });
+        }
+    }
+
+    return short;
 }
 
 // Passing tests for correct inputs only: invalid inputs `complain` at comptime,
