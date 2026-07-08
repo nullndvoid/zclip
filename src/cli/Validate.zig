@@ -168,6 +168,9 @@ fn validateStruct(comptime T: type) void {
 
             if (@hasDecl(T, "help"))
                 validateHelp(T, data.fields);
+
+            if (@hasDecl(T, "positionals"))
+                validatePositionals(T);
         },
         else => complain("{s} was not a struct. This is a bug.", .{typeName(T)}),
     }
@@ -226,4 +229,52 @@ fn validatePtr(comptime T: type, comptime ptr: Type.Pointer, comptime name: [:0]
 
     // []u8 and friends are strings; anything else is a list of readable values.
     if (ptr.child != u8) validateField(ptr.child, name);
+}
+
+/// TODO: Allow repeated positionals only if output type is a slice or array?
+fn validatePositionals(comptime T: type) void {
+    const positionals = @field(T, "positionals");
+    const Positionals = @TypeOf(positionals);
+
+    validateStruct(T, positionals);
+
+    const fields = @typeInfo(Positionals).@"struct".fields;
+
+    inline for (fields, 0..) |pf, idx| {
+        if (!@hasField(T, pf.name))
+            complain("{s}.positionals: got non existant field {s}", .{ typeName(T), pf.name });
+
+        if (pf.type != @EnumLiteral())
+            complain("{s} positional {s} should be of type @EnumLiteral(), i.e. positionals = .{ .field, .next_field }", .{ typeName(T), pf.name });
+
+        validatePositionalFieldType(T, pf.name, fields, idx);
+    }
+}
+
+/// True if a field is of type []T for any T that is not u8.
+/// For obvious reasons these are only allowed in the last slot.
+fn isVariadicPositional(comptime T: type, comptime field_name: [:0]const u8) bool {
+    const field = @field(T, field_name);
+    const Field = @TypeOf(field);
+
+    switch (@typeInfo(Field)) {
+        .pointer => |ptr| {
+            return (ptr.size == .slice) and (ptr.child != u8);
+        },
+        else => false,
+    }
+}
+
+fn validatePositionalFieldType(comptime T: type, comptime field_name: [:0]const u8, comptime fields: []const Type.StructField, idx: usize) void {
+    const field = @field(T, field_name);
+    const Field = @TypeOf(field);
+
+    if (idx != fields.len - 1 and isVariadicPositional(T, field_name)) {
+        complain("{s} variadic positionals ({s}) are only allowed in the last slot!", .{ typeName(T), field_name });
+    }
+
+    // Stub for now. Should probably just call validateField?
+    switch (@typeInfo(Field)) {
+        else => complain("{s} positional type {s} not allowed.", .{ typeName(T), field_name }),
+    }
 }
