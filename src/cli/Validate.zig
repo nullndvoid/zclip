@@ -244,7 +244,7 @@ fn validateSubcommandUnion(comptime T: type, comptime F: type) void {
 }
 
 /// Returns true if U is a subcommand union. Performs no validation, just ?union.
-fn isSubcommandUnion(comptime U: type) bool {
+pub fn isSubcommandUnion(comptime U: type) bool {
     return switch (@typeInfo(U)) {
         .optional => |opt| switch (@typeInfo(opt.child)) {
             .@"union" => true,
