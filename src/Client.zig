@@ -104,7 +104,6 @@ fn sendCommandRw(self: *Client, rdr: *Io.Reader, writer: *Io.Writer, command: Co
 
     if (resp_tag == null) return;
 
-    // TODO: Have a timeout.
     var select_tasks: [2]SelectTask = undefined;
     var select = Io.Select(SelectTask).init(self.io, &select_tasks);
 
