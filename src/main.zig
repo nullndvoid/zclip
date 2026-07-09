@@ -46,10 +46,27 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     var arena = std.heap.ArenaAllocator.init(gpa.allocator());
     defer arena.deinit();
 
+    const stderr = std.Io.File.stderr();
+    var stderr_buf: [1024]u8 = undefined;
+    var stderr_fw = stderr.writer(io, &stderr_buf);
+    const writer = &stderr_fw.interface;
+
     const args = try minimal.args.toSlice(arena.allocator());
     var diag = Cli.Diagnostics{};
     var parse_ctx = Cli.ParseCtx.init(arena.allocator(), args[1..], &diag);
     const cli_opts = Cli.parse(Cli.Opts, &parse_ctx) catch |err| {
+        switch (err) {
+            error.HelpRequested => {
+                try Cli.Help.writeHelp(Cli.Opts, .{
+                    .program_name = "zclip",
+                    .program_desc = "A tool to share your clipboard across systems.",
+                }, writer);
+
+                return;
+            },
+            else => {},
+        }
+
         log.err("Could not parse args. Reason: {t}", .{err});
         if (parse_ctx.diag) |d| log.err("Message: {s}", .{d.message});
 
