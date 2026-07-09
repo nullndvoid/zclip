@@ -88,15 +88,11 @@ pub const ParseCtx = struct {
     }
 };
 
-pub fn parse(comptime T: type, args: []const [:0]const u8, alloc: Allocator, diag: ?*Diagnostics) ParseError!void {
+/// Call deinit on `ctx` when you are done.
+pub fn parse(comptime T: type, ctx: *ParseCtx) ParseError!T {
     Validate.validate(T);
 
-    const mode = Validate.positionalOrSubcom(T);
-
-    std.log.debug("mode: {t}", .{mode});
-
-    const ctx = ParseCtx.init(alloc, args, diag);
-    _ = ctx; // autofix
+    return try parseInner(T, ctx, &.{});
 }
 
 /// Match `--name` (already stripped of dashes, before any '=') to a field index.
@@ -304,8 +300,14 @@ fn parseInner(comptime T: type, ctx: *ParseCtx, command_path: []const u8) ParseE
             try assignField(T, &result, &seen_fields, indices[pos_idx], ctx, arg, null);
             pos_idx += 1;
         } else if (comptime mode == .Subcommand) {
-            // TODO: match against the union tags and recurse.
-            return fail(ctx, error.UnknownCommand, "unknown command \"{s}\"", .{arg});
+            const subcommand_field = comptime subcommandField(T).?;
+
+            // Asserted by validate.
+            const Union = @typeInfo(subcommand_field.type).optional.child;
+
+            // The child consumes every remaining arg, so the loop ends after this.
+            @field(result, subcommand_field.name) = try parseSubcommand(Union, ctx, arg, command_path);
+            seen_fields.set(comptime subcommandFieldIndex(T).?);
         } else {
             return fail(ctx, error.UnexpectedArgument, "unexpected argument \"{s}\"", .{arg});
         }
@@ -339,6 +341,37 @@ fn parseInner(comptime T: type, ctx: *ParseCtx, command_path: []const u8) ParseE
     }
 
     return result;
+}
+
+/// Matches `word` against the union's tag names and parses the payload from
+/// the remaining args. Owns (and frees) the command path it builds; help
+/// requests dupe it into the Diagnostics first.
+fn parseSubcommand(comptime U: type, ctx: *ParseCtx, word: []const u8, command_path: []const u8) ParseError!U {
+    inline for (@typeInfo(U).@"union".fields) |uf| {
+        if (std.mem.eql(u8, uf.name, word)) {
+            const new_path = if (command_path.len > 0)
+                try std.fmt.allocPrint(ctx.alloc, "{s} {s}", .{ command_path, uf.name })
+            else
+                try ctx.alloc.dupe(u8, uf.name);
+            defer ctx.alloc.free(new_path);
+
+            if (comptime uf.type == void) {
+                // A payload-less command takes no further args, except help.
+                if (ctx.takeArg()) |next| {
+                    if (std.mem.eql(u8, next, "-h") or std.mem.eql(u8, next, "--help"))
+                        return helpRequested(ctx, new_path);
+
+                    return fail(ctx, error.UnexpectedArgument, "unexpected argument \"{s}\" after \"{s}\"", .{ next, new_path });
+                }
+
+                return @unionInit(U, uf.name, {});
+            } else {
+                return @unionInit(U, uf.name, try parseInner(uf.type, ctx, new_path));
+            }
+        }
+    }
+
+    return fail(ctx, error.UnknownCommand, "unknown command \"{s}\"", .{word});
 }
 
 /// Parses one value of type F. `value` is the inline `=value` part (or, for
@@ -422,6 +455,11 @@ fn assignField(
 ) ParseError!void {
     const fields = @typeInfo(T).@"struct".fields;
     inline for (fields, 0..) |f, i| {
+        // The subcommand union is never assigned here, and its type would
+        // not instantiate under parseValue.
+        comptime if (subcommandField(T)) |u|
+            if (std.mem.eql(u8, f.name, u.name)) continue;
+
         if (i == idx) {
             const disp = display orelse comptime longName(f);
 
@@ -494,8 +532,15 @@ fn isPositionalSlot(comptime T: type, comptime field_name: [:0]const u8) bool {
 /// Validation guarantees there is at most one.
 fn subcommandField(comptime T: type) ?Type.StructField {
     comptime {
-        for (@typeInfo(T).@"struct".fields) |f| {
-            if (Validate.isSubcommandUnion(f.type)) return f;
+        const idx = subcommandFieldIndex(T) orelse return null;
+        return @typeInfo(T).@"struct".fields[idx];
+    }
+}
+
+fn subcommandFieldIndex(comptime T: type) ?usize {
+    comptime {
+        for (@typeInfo(T).@"struct".fields, 0..) |f, idx| {
+            if (Validate.isSubcommandUnion(f.type)) return idx;
         }
 
         return null;
@@ -673,6 +718,101 @@ test "parseInner: diagnostics on errors" {
         try std.testing.expectError(error.InvalidValue, parseInner(T, &ctx, ""));
         try std.testing.expectEqualStrings("invalid integer \"lots\" for --retries", diag.message);
     }
+}
+
+test "parseInner: subcommands route and recurse" {
+    const PeerAdd = struct {
+        name: []const u8,
+        pubkey: []const u8,
+        force: bool = false,
+
+        pub const positionals = .{ .name, .pubkey };
+    };
+
+    const PeerOpts = struct {
+        action: ?union(enum) {
+            add: PeerAdd,
+            list: void,
+        } = null,
+    };
+
+    const Root = struct {
+        verbose: bool = false,
+
+        command: ?union(enum) {
+            peer: PeerOpts,
+            version: void,
+        } = null,
+    };
+
+    var ctx = ParseCtx.init(std.testing.allocator, &.{
+        "--verbose", "peer", "add", "Jane", "pubkey123", "--force",
+    }, null);
+
+    const r = try parseInner(Root, &ctx, "");
+
+    try std.testing.expect(r.verbose);
+
+    const add = r.command.?.peer.action.?.add;
+    try std.testing.expectEqualStrings("Jane", add.name);
+    try std.testing.expectEqualStrings("pubkey123", add.pubkey);
+    try std.testing.expect(add.force);
+}
+
+test "parseInner: void subcommand takes no args" {
+    const Root = struct {
+        command: ?union(enum) {
+            run: struct { fast: bool = false },
+            version: void,
+        } = null,
+    };
+
+    var ctx = ParseCtx.init(std.testing.allocator, &.{"version"}, null);
+    const r = try parseInner(Root, &ctx, "");
+    try std.testing.expect(r.command.? == .version);
+
+    var diag: Diagnostics = .{};
+    var ctx2 = ParseCtx.init(std.testing.allocator, &.{ "version", "extra" }, &diag);
+    defer diag.deinit(&ctx2);
+
+    try std.testing.expectError(error.UnexpectedArgument, parseInner(Root, &ctx2, ""));
+    try std.testing.expectEqualStrings("unexpected argument \"extra\" after \"version\"", diag.message);
+}
+
+test "parseInner: unknown command" {
+    const Root = struct {
+        command: ?union(enum) {
+            run: struct {},
+        } = null,
+    };
+
+    var diag: Diagnostics = .{};
+    var ctx = ParseCtx.init(std.testing.allocator, &.{"walk"}, &diag);
+    defer diag.deinit(&ctx);
+
+    try std.testing.expectError(error.UnknownCommand, parseInner(Root, &ctx, ""));
+    try std.testing.expectEqualStrings("unknown command \"walk\"", diag.message);
+}
+
+test "parseInner: help deep in the tree records the full path" {
+    const PeerOpts = struct {
+        action: ?union(enum) {
+            add: struct { name: ?[]const u8 = null },
+        } = null,
+    };
+
+    const Root = struct {
+        command: ?union(enum) {
+            peer: PeerOpts,
+        } = null,
+    };
+
+    var diag: Diagnostics = .{};
+    var ctx = ParseCtx.init(std.testing.allocator, &.{ "peer", "add", "-h" }, &diag);
+    defer diag.deinit(&ctx);
+
+    try std.testing.expectError(error.HelpRequested, parseInner(Root, &ctx, ""));
+    try std.testing.expectEqualStrings("peer add", diag.command_path);
 }
 
 test "parseInner: help records the command path" {
