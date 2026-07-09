@@ -1,8 +1,22 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 J. Hinchliffe (nullndvoid)
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const Type = std.builtin.Type;
 
+const util = @import("util.zig");
 const Validate = @import("Validate.zig");
 
 /// I should add pretty error reporting and stuff like that.
@@ -99,11 +113,11 @@ pub fn parse(comptime T: type, ctx: *ParseCtx) ParseError!T {
 fn matchLong(comptime T: type, name: []const u8) ?usize {
     const fields = @typeInfo(T).@"struct".fields;
     inline for (fields, 0..) |f, idx| {
-        comptime if (isPositionalSlot(T, f.name)) continue;
-        comptime if (subcommandField(T)) |u|
+        comptime if (util.isPositionalSlot(T, f.name)) continue;
+        comptime if (util.subcommandField(T)) |u|
             if (std.mem.eql(u8, f.name, u.name)) continue;
 
-        if (std.mem.eql(u8, name, comptime longName(f))) return idx;
+        if (std.mem.eql(u8, name, comptime util.longName(f))) return idx;
     }
     return null;
 }
@@ -114,7 +128,7 @@ fn matchShort(comptime T: type, c: u8) ?usize {
     const fields = @typeInfo(T).@"struct".fields;
 
     inline for (fields, 0..) |f, idx| {
-        if (comptime shortFor(T, f.name)) |short| {
+        if (comptime util.shortFor(T, f.name)) |short| {
             if (c == short) return idx;
         }
     }
@@ -287,7 +301,7 @@ fn parseInner(comptime T: type, ctx: *ParseCtx, command_path: []const u8) ParseE
                     const last_field = comptime fields[indices[indices.len - 1]];
                     const Elem = @typeInfo(last_field.type).pointer.child;
 
-                    try tail.append(ctx.alloc, try parseValue(Elem, ctx, arg, comptime longName(last_field)));
+                    try tail.append(ctx.alloc, try parseValue(Elem, ctx, arg, comptime util.longName(last_field)));
 
                     pos_idx += 1;
                     continue;
@@ -300,14 +314,14 @@ fn parseInner(comptime T: type, ctx: *ParseCtx, command_path: []const u8) ParseE
             try assignField(T, &result, &seen_fields, indices[pos_idx], ctx, arg, null);
             pos_idx += 1;
         } else if (comptime mode == .Subcommand) {
-            const subcommand_field = comptime subcommandField(T).?;
+            const subcommand_field = comptime util.subcommandField(T).?;
 
             // Asserted by validate.
             const Union = @typeInfo(subcommand_field.type).optional.child;
 
             // The child consumes every remaining arg, so the loop ends after this.
             @field(result, subcommand_field.name) = try parseSubcommand(Union, ctx, arg, command_path);
-            seen_fields.set(comptime subcommandFieldIndex(T).?);
+            seen_fields.set(comptime util.subcommandFieldIndex(T).?);
         } else {
             return fail(ctx, error.UnexpectedArgument, "unexpected argument \"{s}\"", .{arg});
         }
@@ -328,15 +342,15 @@ fn parseInner(comptime T: type, ctx: *ParseCtx, command_path: []const u8) ParseE
 
     // Anything required that was never given?
     inline for (fields, 0..) |f, i| {
-        comptime if (subcommandField(T)) |u|
+        comptime if (util.subcommandField(T)) |u|
             if (std.mem.eql(u8, f.name, u.name)) continue;
 
         const required = comptime (f.defaultValue() == null and @typeInfo(f.type) != .optional);
         if (required and !seen_fields.isSet(i)) {
-            if (comptime isPositionalSlot(T, f.name))
+            if (comptime util.isPositionalSlot(T, f.name))
                 return fail(ctx, error.MissingPositional, "missing required positional <{s}>", .{f.name});
 
-            return fail(ctx, error.MissingRequiredFlag, "missing required flag --{s}", .{comptime longName(f)});
+            return fail(ctx, error.MissingRequiredFlag, "missing required flag --{s}", .{comptime util.longName(f)});
         }
     }
 
@@ -457,11 +471,11 @@ fn assignField(
     inline for (fields, 0..) |f, i| {
         // The subcommand union is never assigned here, and its type would
         // not instantiate under parseValue.
-        comptime if (subcommandField(T)) |u|
+        comptime if (util.subcommandField(T)) |u|
             if (std.mem.eql(u8, f.name, u.name)) continue;
 
         if (i == idx) {
-            const disp = display orelse comptime longName(f);
+            const disp = display orelse comptime util.longName(f);
 
             @field(result, f.name) = try parseValue(f.type, ctx, eq_value, disp);
             seen.set(i);
@@ -472,79 +486,6 @@ fn assignField(
 
     // idx came from a matcher so this should never be hit.
     unreachable;
-}
-
-// argv_0 arg/positional/subcom...
-// if we see -- and not quoted, parse long flags for T
-// same goes for short flags
-// if a short flag is binary, next char should be a space/another flag short char.
-//
-
-// We can take:
-// -s (short flag)
-// --long-flag
-// subcommand/positional (select based on current T)
-// spaces? Should be handled by shell args.
-
-/// The user-facing long flag name for a field: underscores become dashes,
-/// e.g. `config_path` matches `--config-path`.
-fn longName(comptime field: Type.StructField) [:0]const u8 {
-    comptime {
-        var out: [field.name.len:0]u8 = @splat(0);
-
-        for (field.name, 0..) |c, i| {
-            out[i] = if (c == '_') '-' else c;
-        }
-
-        const frozen = out;
-        return &frozen;
-    }
-}
-
-/// The short flag char declared for a field in the `flags` decl, if any.
-fn shortFor(comptime T: type, comptime field_name: [:0]const u8) ?u8 {
-    comptime {
-        if (!@hasDecl(T, "flags")) return null;
-        if (!@hasField(@TypeOf(T.flags), field_name)) return null;
-
-        const entry = @field(T.flags, field_name);
-        if (!@hasField(@TypeOf(entry), "short")) return null;
-
-        return entry.short;
-    }
-}
-
-/// True if the field is listed in the `positionals` decl, meaning it is
-/// filled by position rather than by flag.
-fn isPositionalSlot(comptime T: type, comptime field_name: [:0]const u8) bool {
-    comptime {
-        if (!@hasDecl(T, "positionals")) return false;
-
-        for (T.positionals) |p| {
-            if (std.mem.eql(u8, @tagName(p), field_name)) return true;
-        }
-
-        return false;
-    }
-}
-
-/// Returns the struct field holding the subcommand union, if any.
-/// Validation guarantees there is at most one.
-fn subcommandField(comptime T: type) ?Type.StructField {
-    comptime {
-        const idx = subcommandFieldIndex(T) orelse return null;
-        return @typeInfo(T).@"struct".fields[idx];
-    }
-}
-
-fn subcommandFieldIndex(comptime T: type) ?usize {
-    comptime {
-        for (@typeInfo(T).@"struct".fields, 0..) |f, idx| {
-            if (Validate.isSubcommandUnion(f.type)) return idx;
-        }
-
-        return null;
-    }
 }
 
 test "comptime lookup helpers" {
@@ -572,19 +513,19 @@ test "comptime lookup helpers" {
 
     const fields = @typeInfo(T).@"struct".fields;
 
-    try std.testing.expectEqualStrings("config-path", comptime longName(fields[0]));
-    try std.testing.expectEqualStrings("verbose", comptime longName(fields[1]));
+    try std.testing.expectEqualStrings("config-path", comptime util.longName(fields[0]));
+    try std.testing.expectEqualStrings("verbose", comptime util.longName(fields[1]));
 
-    try std.testing.expectEqual(@as(?u8, 'c'), comptime shortFor(T, "config_path"));
-    try std.testing.expectEqual(@as(?u8, null), comptime shortFor(T, "verbose"));
-    try std.testing.expectEqual(@as(?u8, null), comptime shortFor(P, "name"));
+    try std.testing.expectEqual(@as(?u8, 'c'), comptime util.shortFor(T, "config_path"));
+    try std.testing.expectEqual(@as(?u8, null), comptime util.shortFor(T, "verbose"));
+    try std.testing.expectEqual(@as(?u8, null), comptime util.shortFor(P, "name"));
 
-    try std.testing.expect(comptime isPositionalSlot(P, "name"));
-    try std.testing.expect(comptime !isPositionalSlot(P, "force"));
-    try std.testing.expect(comptime !isPositionalSlot(T, "name"));
+    try std.testing.expect(comptime util.isPositionalSlot(P, "name"));
+    try std.testing.expect(comptime !util.isPositionalSlot(P, "force"));
+    try std.testing.expect(comptime !util.isPositionalSlot(T, "name"));
 
-    try std.testing.expectEqualStrings("command", comptime (subcommandField(T) orelse unreachable).name);
-    try std.testing.expect(comptime subcommandField(P) == null);
+    try std.testing.expectEqualStrings("command", comptime (util.subcommandField(T) orelse unreachable).name);
+    try std.testing.expect(comptime util.subcommandField(P) == null);
 }
 
 test "parseInner: long, short and bundled flags" {
