@@ -47,15 +47,25 @@ pub fn shortFor(comptime T: type, comptime field_name: [:0]const u8) ?u8 {
 /// True if the field is listed in the `positionals` decl, meaning it is
 /// filled by position rather than by flag.
 pub fn isPositionalSlot(comptime T: type, comptime field_name: [:0]const u8) bool {
-    comptime {
-        if (!@hasDecl(T, "positionals")) return false;
+    _ = positionalSlot(T, field_name) orelse return false;
+    return true;
+}
 
-        for (T.positionals) |p| {
-            if (std.mem.eql(u8, @tagName(p), field_name)) return true;
+pub fn positionalSlot(comptime T: type, comptime field_name: [:0]const u8) ?usize {
+    comptime {
+        if (!@hasDecl(T, "positionals")) return null;
+
+        for (T.positionals, 0..) |p, idx| {
+            if (std.mem.eql(u8, @tagName(p), field_name)) return idx;
         }
 
-        return false;
+        return null;
     }
+}
+
+/// True if the field holds the subcommand union rather than a flag.
+pub fn isSubcommand(comptime T: type, comptime field_name: [:0]const u8) bool {
+    comptime return Validate.isSubcommandUnion(@FieldType(T, field_name));
 }
 
 /// Returns the struct field holding the subcommand union, if any.
@@ -75,4 +85,18 @@ pub fn subcommandFieldIndex(comptime T: type) ?usize {
 
         return null;
     }
+}
+
+/// Returns the description of the field with name `field_name` if any.
+pub fn descriptionOf(comptime T: type, comptime field_name: [:0]const u8) ?[:0]const u8 {
+    if (!@hasDecl(T, "help")) return null;
+
+    const Help = @TypeOf(T.help);
+
+    if (!@hasField(Help, field_name)) return null;
+
+    if (!@hasField(@TypeOf(@field(T.help, field_name)), "desc"))
+        return null;
+
+    return @field(T.help, field_name).desc;
 }

@@ -21,6 +21,7 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const build_options = @import("options");
 const zclip = @import("zclip");
 
+pub const Help = @import("cli/Help.zig");
 pub const Parse = @import("cli/parse.zig");
 pub const parse = Parse.parse;
 pub const ParseCtx = Parse.ParseCtx;
@@ -72,8 +73,6 @@ pub const Opts = struct {
     verbose: bool = IS_DEBUG,
     /// The path to the UNIX socket. Should override any config set if passed.
     socket_path: ?[]const u8 = null,
-    /// True when help or usage was printed etc. TODO: Move to parser.
-    should_exit: bool = false,
     /// The bind address to bind the Daemon to.
     bind_addr: ?IpAddress = null,
     /// The config file path to use.
