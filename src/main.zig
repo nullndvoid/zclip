@@ -23,11 +23,6 @@ const Network = @import("Network.zig");
 
 const log = std.log.scoped(.zclip);
 
-const TaskResult = union(enum) {
-    daemon: (anyerror || std.Io.Cancelable)!void,
-    signal: std.Io.Cancelable!void,
-};
-
 pub fn main(minimal: std.process.Init.Minimal) !void {
     var gpa = std.heap.DebugAllocator(.{
         .enable_memory_limit = true,
@@ -49,16 +44,8 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     }
 
     var arena = std.heap.ArenaAllocator.init(gpa.allocator());
-    defer arena.deinit();
 
-    const args = try minimal.args.toSlice(arena.allocator());
-
-    for (args[1..]) |arg| {
-        log.debug("\"{s}\"", .{arg});
-    }
-
-    var parse_ctx = Cli.Parse.ParseCtx.init(arena.allocator(), args[1..], null);
-    const cli_opts = try Cli.parse(Cli.CliOpts, &parse_ctx);
+    const cli_opts = try Cli.parseArgs(&arena, minimal.args);
 
     var envmap = try minimal.environ.createMap(gpa.allocator());
     defer envmap.deinit();
@@ -77,6 +64,11 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     if (cfg.debugging.memory_limit) |limit| {
         gpa.requested_memory_limit = limit;
     }
+
+    const TaskResult = union(enum) {
+        daemon: (anyerror || std.Io.Cancelable)!void,
+        signal: std.Io.Cancelable!void,
+    };
 
     var buffer: [2]TaskResult = undefined;
     var select: std.Io.Select(TaskResult) = .init(io, &buffer);
