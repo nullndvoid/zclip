@@ -22,7 +22,9 @@ const build_options = @import("options");
 const clap = @import("clap");
 const zclip = @import("zclip");
 
-pub const Parser = @import("cli/Parser.zig");
+pub const Parse = @import("cli/parse.zig");
+pub const parse = Parse.parse;
+
 pub const Validate = @import("cli/Validate.zig");
 const Network = @import("Network.zig");
 
@@ -347,6 +349,11 @@ pub const CliOpts = struct {
 
     command: ?CliSubcommand = null,
 
+    pub const flags = .{
+        .mode = .{ .short = 'm' },
+        .verbose = .{ .short = 'v' },
+    };
+
     pub const help = .{
         .usage = "usage: zclip [options] <command> [command options]",
         .verbose = .{
@@ -375,8 +382,15 @@ pub const CliOpts = struct {
 const IpAddress = struct {
     addr: Io.net.IpAddress,
 
-    pub fn parse(ctx: *Parser.ParseCtx) !IpAddress {
-        _ = ctx; // autofix
+    pub fn parse(ctx: *Parse.ParseCtx) !IpAddress {
+        const arg = ctx.takeArg() orelse return error.MissingValue;
+
+        var addr = try Io.net.IpAddress.parseLiteral(arg);
+        if (addr.getPort() == 0) {
+            addr.setPort(Network.DEFAULT_NET_PORT);
+        }
+
+        return .{ .addr = addr };
     }
 };
 

@@ -51,11 +51,14 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     var arena = std.heap.ArenaAllocator.init(gpa.allocator());
     defer arena.deinit();
 
-    var cli_args = Cli.CliOpts{};
+    const args = try minimal.args.toSlice(arena.allocator());
 
-    try Cli.setupAndParseArgs(io, &arena, minimal.args, &cli_args);
+    for (args[1..]) |arg| {
+        log.debug("\"{s}\"", .{arg});
+    }
 
-    if (cli_args.should_exit) return;
+    var parse_ctx = Cli.Parse.ParseCtx.init(arena.allocator(), args[1..], null);
+    const cli_opts = try Cli.parse(Cli.CliOpts, &parse_ctx);
 
     var envmap = try minimal.environ.createMap(gpa.allocator());
     defer envmap.deinit();
@@ -63,7 +66,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     var config: Config = undefined;
     defer config.deinit();
 
-    if (cli_args.config_path) |path| {
+    if (cli_opts.config_path) |path| {
         config = try Config.fromPath(io, arena.allocator(), path);
     } else {
         config = try Config.fromWellKnown(io, arena.allocator(), &envmap);
@@ -81,21 +84,17 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
 
     try select.concurrent(.signal, waitForInterrupt, .{});
 
-    const socket_path = cli_args.socket_path orelse
+    const socket_path = cli_opts.socket_path orelse
         cfg.daemon.unix_socket_address orelse
         cfg.client.unix_socket_address orelse
         try getSocketPath(arena.allocator(), minimal.environ);
 
     // Get our own identity.
-    const data_dir = cli_args.data_dir orelse
-        cfg.daemon.data_dir orelse
-        try Network.Identity.getWellKnownDir(io, arena.allocator(), &envmap);
+    if (cli_opts.command == null) {
+        log.err("Please provide a command!", .{});
+    }
 
-    const ident = try Network.Identity.getOrInit(
-        io,
-        arena.allocator(),
-        data_dir,
-    );
+    const command = cli_opts.command.?;
 
     var inet_cfg = Network.Config{};
     if (cfg.daemon.bind_address) |addr| {
@@ -107,7 +106,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         for (peers) |*peer| {
             peer.fix(&arena) catch |err| {
                 log.err("Could not use configured peer \"{s}\". Reason: {t}", .{ peer.nickname, err });
-                // log.info("To add a peer, try `zclip client peer nickame public_key`", .{}); TODO: Add this for fun.
+                // log.info("To add a peer, try `zclip peer add nickname public_key`", .{}); TODO: Add this for fun.
                 // In all seriousness if I want the Daemon to run as a systemd service, then I will need an easy way
                 // to talk to it.
             };
@@ -115,12 +114,23 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         inet_cfg.peers = peers;
     }
 
-    if (cli_args.bind_addr) |addr| {
-        inet_cfg.bind_addr = addr;
+    if (cli_opts.bind_addr) |addr| {
+        inet_cfg.bind_addr = addr.addr;
     }
 
-    switch (cli_args.mode) {
-        .Daemon => {
+    switch (command) {
+        .daemon => |daemon_opts| {
+            const data_dir =
+                daemon_opts.data_dir orelse
+                cfg.daemon.data_dir orelse
+                try Network.Identity.getWellKnownDir(io, arena.allocator(), &envmap);
+
+            const ident = try Network.Identity.getOrInit(
+                io,
+                arena.allocator(),
+                data_dir,
+            );
+
             try select.concurrent(.daemon, runDaemon, .{
                 &arena,
                 ident,
@@ -130,20 +140,27 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
                 },
             });
         },
-        .Client => {
-            var client_arena = std.heap.ArenaAllocator.init(gpa.allocator());
-            var client = try Client.init(io, &client_arena, .{
-                .socket_path = socket_path,
-            });
-            defer client.deinit();
 
-            try client.sendCommand(.GetPubkey);
-
-            select.cancelDiscard();
-
-            return;
+        .peer => |peer| {
+            _ = peer; // autofix
         },
     }
+
+    // switch (command) {
+    //     .Client => {
+    //         var client_arena = std.heap.ArenaAllocator.init(gpa.allocator());
+    //         var client = try Client.init(io, &client_arena, .{
+    //             .socket_path = socket_path,
+    //         });
+    //         defer client.deinit();
+
+    //         try client.sendCommand(.GetPubkey);
+
+    //         select.cancelDiscard();
+
+    //         return;
+    //     },
+    // }
 
     const res = try select.await();
     switch (res) {
