@@ -36,10 +36,6 @@
             .url = "git+https://codeberg.org/ifreund/zig-wayland.git#a8e10e87e5ebb49ce518ac3d2198909c87ee615a",
             .hash = "wayland-0.7.0-dev-lQa1kjT8AQDBstL61Gy3WCMtGwVaMN1p6w5wGfdDvP15",
         },
-        .clap = .{
-            .url = "https://github.com/Hejsil/zig-clap/archive/refs/tags/0.12.0.tar.gz",
-            .hash = "clap-0.12.0-oBajB7foAQDqlSwaSG5g0yq7xGbQARUsBk5T64gAOqP5",
-        },
         .known_folders = .{
             .url = "git+https://github.com/ziglibs/known-folders.git#207c34a16e4365edc20d92c7892f962b3bed46e8",
             .hash = "known_folders-0.0.0-Fy-PJsbKAACbDh9bBxR0MMThxZSS6A9RH4apWphNHY70",

@@ -71,7 +71,6 @@ pub fn build(b: *std.Build) void {
         },
     }
 
-    const clap = b.dependency("clap", .{});
     const known_folders = b.dependency("known_folders", .{});
     const serde = b.dependency("serde", .{
         .target = target,
@@ -98,7 +97,6 @@ pub fn build(b: *std.Build) void {
         .use_lld = true,
     });
 
-    exe.root_module.addImport("clap", clap.module("clap"));
     exe.root_module.addImport("known-folders", known_folders.module("known-folders"));
     exe.root_module.addImport("serde", serde.module("serde"));
     exe.root_module.addImport("noisey", noisey.module("noisey"));
@@ -114,7 +112,6 @@ pub fn build(b: *std.Build) void {
         .use_lld = true,
     });
 
-    exe_check.root_module.addImport("clap", clap.module("clap"));
     exe_check.root_module.addImport("known-folders", known_folders.module("known-folders"));
     exe_check.root_module.addImport("serde", serde.module("serde"));
     exe_check.root_module.addImport("noisey", noisey.module("noisey"));
