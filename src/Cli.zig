@@ -19,12 +19,14 @@ const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
 const build_options = @import("options");
-const clap = @import("clap");
 const zclip = @import("zclip");
 
 pub const Parse = @import("cli/parse.zig");
 pub const parse = Parse.parse;
-pub const Validate = @import("cli/Validate.zig");
+pub const ParseCtx = Parse.ParseCtx;
+pub const Diagnostics = Parse.Diagnostics;
+pub const ParseError = Parse.ParseError;
+const Validate = @import("cli/Validate.zig");
 const Network = @import("Network.zig");
 
 const IS_DEBUG = @import("builtin").mode == .Debug;
@@ -59,12 +61,12 @@ pub const PeerOpts = struct {
     },
 };
 
-const CliSubcommand = union(enum) {
+const Subcommand = union(enum) {
     daemon: DaemonOpts,
     peer: PeerOpts,
 };
 
-pub const CliOpts = struct {
+pub const Opts = struct {
     /// Enables debug logging. Off by default in Release builds.
     /// This is false by default on other optimise modes.
     verbose: bool = IS_DEBUG,
@@ -77,7 +79,7 @@ pub const CliOpts = struct {
     /// The config file path to use.
     config_path: ?[]const u8 = null,
 
-    command: ?CliSubcommand = null,
+    command: ?Subcommand = null,
 
     pub const flags = .{
         .verbose = .{ .short = 'v' },
@@ -104,7 +106,7 @@ pub const CliOpts = struct {
     };
 };
 
-const IpAddress = struct {
+pub const IpAddress = struct {
     addr: Io.net.IpAddress,
 
     pub fn parse(ctx: *Parse.ParseCtx) !IpAddress {
@@ -118,12 +120,3 @@ const IpAddress = struct {
         return .{ .addr = addr };
     }
 };
-
-/// Parses argv into CliOpts.
-pub fn parseArgs(arena: *ArenaAllocator, process_args: std.process.Args) !CliOpts {
-    const args = try process_args.toSlice(arena.allocator());
-
-    var parse_ctx = Parse.ParseCtx.init(arena.allocator(), args[1..], null);
-
-    return try parse(CliOpts, &parse_ctx);
-}

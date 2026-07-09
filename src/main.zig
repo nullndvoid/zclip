@@ -44,8 +44,17 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     }
 
     var arena = std.heap.ArenaAllocator.init(gpa.allocator());
+    defer arena.deinit();
 
-    const cli_opts = try Cli.parseArgs(&arena, minimal.args);
+    const args = try minimal.args.toSlice(arena.allocator());
+    var diag = Cli.Diagnostics{};
+    var parse_ctx = Cli.ParseCtx.init(arena.allocator(), args[1..], &diag);
+    const cli_opts = Cli.parse(Cli.Opts, &parse_ctx) catch |err| {
+        log.err("Could not parse args. Reason: {t}", .{err});
+        if (parse_ctx.diag) |d| log.err("Message: {s}", .{d.message});
+
+        std.process.exit(1);
+    };
 
     var envmap = try minimal.environ.createMap(gpa.allocator());
     defer envmap.deinit();
@@ -84,6 +93,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     // Get our own identity.
     if (cli_opts.command == null) {
         log.err("Please provide a command!", .{});
+        std.process.exit(1);
     }
 
     const command = cli_opts.command.?;
@@ -98,9 +108,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         for (peers) |*peer| {
             peer.fix(&arena) catch |err| {
                 log.err("Could not use configured peer \"{s}\". Reason: {t}", .{ peer.nickname, err });
-                // log.info("To add a peer, try `zclip peer add nickname public_key`", .{}); TODO: Add this for fun.
-                // In all seriousness if I want the Daemon to run as a systemd service, then I will need an easy way
-                // to talk to it.
+                log.info("To add a peer, try `zclip peer add nickname public_key`", .{});
             };
         }
         inet_cfg.peers = peers;
