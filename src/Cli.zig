@@ -21,10 +21,9 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const build_options = @import("options");
 const zclip = @import("zclip");
 
-pub const Help = @import("cli/Help.zig");
 pub const Parse = @import("cli/parse.zig");
-pub const parse = Parse.parse;
 pub const ParseCtx = Parse.ParseCtx;
+pub const ValueCtx = Parse.ValueCtx;
 pub const Diagnostics = Parse.Diagnostics;
 pub const ParseError = Parse.ParseError;
 const Validate = @import("cli/Validate.zig");
@@ -108,7 +107,7 @@ pub const Opts = struct {
 pub const IpAddress = struct {
     addr: Io.net.IpAddress,
 
-    pub fn parse(ctx: *Parse.ParseCtx) !IpAddress {
+    pub fn parse(ctx: *Parse.ValueCtx) !IpAddress {
         const arg = ctx.takeArg() orelse return error.MissingValue;
 
         var addr = try Io.net.IpAddress.parseLiteral(arg);

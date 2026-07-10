@@ -16,6 +16,7 @@ const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const Type = std.builtin.Type;
 
+const Help = @import("Help.zig");
 const util = @import("util.zig");
 const Validate = @import("Validate.zig");
 
@@ -28,14 +29,9 @@ const Validate = @import("Validate.zig");
 pub const Diagnostics = struct {
     message: []const u8 = "",
 
-    /// Used when help is requested under a subcommand.
-    command_path: []const u8 = "",
-
-    pub fn deinit(diag: *Diagnostics, ctx: *ParseCtx) void {
+    pub fn deinit(diag: *Diagnostics, alloc: Allocator) void {
         if (diag.message.len > 0)
-            ctx.alloc.free(diag.message);
-        if (diag.command_path.len > 0)
-            ctx.alloc.free(diag.command_path);
+            alloc.free(diag.message);
     }
 
     // pub fn printHelp()? Maybe write some general write/print helpers.
@@ -57,16 +53,18 @@ pub const ParseError = error{
     Custom,
 } || std.mem.Allocator.Error;
 
-/// # Parse Context
+/// # Value Context
 ///
-/// Parsing context, used for basic types and can be used to implement
-/// `parse(ctx: *ParseCtx) !T` for custom T.
+/// The restricted context handed to custom value parsers, i.e.
+/// `pub fn parse(ctx: *ValueCtx) !T`. It exposes only the argument
+/// cursor, the allocator and diagnostics — never help or subcommand
+/// machinery.
 ///
 /// # Notes
 ///
 /// Note that parse is guaranteed not to be called if there are no
 /// arguments left to parse.
-pub const ParseCtx = struct {
+pub const ValueCtx = struct {
     alloc: Allocator,
     /// Args can be consumed by the parser.
     args: ArgsList,
@@ -79,7 +77,7 @@ pub const ParseCtx = struct {
 
     /// Returns null once the input is exhausted (and sets `finished`).
     /// Errors can be raised if more arguments were expected, for example.
-    pub fn takeArg(self: *ParseCtx) ?[:0]const u8 {
+    pub fn takeArg(self: *ValueCtx) ?[:0]const u8 {
         if (self.idx == self.args.len) {
             self.finished = true;
             return null;
@@ -91,22 +89,49 @@ pub const ParseCtx = struct {
 
         return arg;
     }
-
-    /// Initialises a `ParseCtx`. Pass `diag` if you want error reporting.
-    pub fn init(alloc: Allocator, args: ArgsList, diag: ?*Diagnostics) ParseCtx {
-        return .{
-            .alloc = alloc,
-            .args = args,
-            .diag = diag,
-        };
-    }
 };
 
-/// Call deinit on `ctx` when you are done.
-pub fn parse(comptime T: type, ctx: *ParseCtx) ParseError!T {
-    Validate.validate(T);
+/// # Parse Context
+///
+/// The application-facing parsing context for the options struct T.
+/// Custom value parsers never see this type; they only get the
+/// restricted `ValueCtx` in `inner`.
+pub fn ParseCtx(comptime T: type) type {
+    return struct {
+        inner: ValueCtx,
+        /// The command level help was requested at, e.g. "" for the root
+        /// or "peer add" under a subcommand.
+        command_path: []const u8 = "",
 
-    return try parseInner(T, ctx, &.{});
+        const Self = @This();
+
+        /// Initialises a `ParseCtx`. Pass `diag` if you want error reporting.
+        pub fn init(alloc: Allocator, args: ArgsList, diag: ?*Diagnostics) Self {
+            return .{ .inner = .{
+                .alloc = alloc,
+                .args = args,
+                .diag = diag,
+            } };
+        }
+
+        /// Call `deinit` on the context when you are done.
+        pub fn parse(self: *Self) ParseError!T {
+            Validate.validate(T);
+
+            return try parseInner(T, self, "");
+        }
+
+        /// Writes help for the command level recorded during parsing;
+        /// before any help request this is the root level.
+        pub fn writeHelp(self: *Self, comptime opts: Help.Opts, writer: *std.Io.Writer) !void {
+            try Help.writeHelpForPath(T, opts, self.command_path, writer);
+        }
+
+        pub fn deinit(self: *Self) void {
+            if (self.command_path.len > 0)
+                self.inner.alloc.free(self.command_path);
+        }
+    };
 }
 
 /// Match `--name` (already stripped of dashes, before any '=') to a field index.
@@ -196,7 +221,7 @@ fn isBoolField(comptime T: type, idx: usize) bool {
 }
 
 /// Records a diagnostic message and returns `err`.
-fn fail(ctx: *ParseCtx, err: ParseError, comptime fmt: []const u8, args: anytype) ParseError {
+fn fail(ctx: *ValueCtx, err: ParseError, comptime fmt: []const u8, args: anytype) ParseError {
     if (ctx.diag) |d| {
         if (d.message.len == 0)
             d.message = std.fmt.allocPrint(ctx.alloc, fmt, args) catch "";
@@ -206,14 +231,16 @@ fn fail(ctx: *ParseCtx, err: ParseError, comptime fmt: []const u8, args: anytype
 }
 
 /// Records which command level help was requested for, e.g. "peer add".
-fn helpRequested(ctx: *ParseCtx, command_path: []const u8) ParseError {
-    if (ctx.diag) |d|
-        d.command_path = ctx.alloc.dupe(u8, command_path) catch "";
+/// `ctx` is the outer `ParseCtx(Root)`.
+fn helpRequested(ctx: anytype, command_path: []const u8) ParseError {
+    ctx.command_path = ctx.inner.alloc.dupe(u8, command_path) catch "";
 
     return error.HelpRequested;
 }
 
-fn parseInner(comptime T: type, ctx: *ParseCtx, command_path: []const u8) ParseError!T {
+/// `ctx` is the outer `ParseCtx(Root)`; Root and T differ below the top
+/// level, where T is the current subcommand's payload.
+fn parseInner(comptime T: type, ctx: anytype, command_path: []const u8) ParseError!T {
     var result: T = undefined;
     const fields = @typeInfo(T).@"struct".fields;
 
@@ -233,12 +260,12 @@ fn parseInner(comptime T: type, ctx: *ParseCtx, command_path: []const u8) ParseE
 
     // Collects values for a trailing variadic positional, if T has one.
     var tail: VariadicTail(T) = if (comptime VariadicTail(T) != void) .empty else {};
-    errdefer if (comptime VariadicTail(T) != void) tail.deinit(ctx.alloc);
+    errdefer if (comptime VariadicTail(T) != void) tail.deinit(ctx.inner.alloc);
 
     // Set if -- recieved. Essentially we just parse positionals.
     var end_of_flags = false;
 
-    while (ctx.takeArg()) |arg| {
+    while (ctx.inner.takeArg()) |arg| {
         if (!end_of_flags and std.mem.eql(u8, arg, "--")) {
             end_of_flags = true;
             continue;
@@ -255,11 +282,11 @@ fn parseInner(comptime T: type, ctx: *ParseCtx, command_path: []const u8) ParseE
                 return helpRequested(ctx, command_path);
 
             const idx = matchLong(T, name) orelse
-                return fail(ctx, error.UnknownFlag, "unknown flag --{s}", .{name});
+                return fail(&ctx.inner, error.UnknownFlag, "unknown flag --{s}", .{name});
 
             // The flag as the user spelled it, minus any =value part.
             const display = arg[0 .. name.len + 2];
-            try assignField(T, &result, &seen_fields, idx, ctx, eq_value, display);
+            try assignField(T, &result, &seen_fields, idx, &ctx.inner, eq_value, display);
 
             continue;
         }
@@ -279,13 +306,13 @@ fn parseInner(comptime T: type, ctx: *ParseCtx, command_path: []const u8) ParseE
                     return helpRequested(ctx, command_path);
 
                 const idx = matchShort(T, c) orelse
-                    return fail(ctx, error.UnknownFlag, "unknown flag -{c}", .{c});
+                    return fail(&ctx.inner, error.UnknownFlag, "unknown flag -{c}", .{c});
 
                 if (!is_last and !isBoolField(T, idx))
-                    return fail(ctx, error.MissingValue, "flag -{c} takes a value so it must come last in \"{s}\"", .{ c, arg });
+                    return fail(&ctx.inner, error.MissingValue, "flag -{c} takes a value so it must come last in \"{s}\"", .{ c, arg });
 
                 const display = [_]u8{ '-', c };
-                try assignField(T, &result, &seen_fields, idx, ctx, if (is_last) eq_value else null, &display);
+                try assignField(T, &result, &seen_fields, idx, &ctx.inner, if (is_last) eq_value else null, &display);
             }
 
             continue;
@@ -301,7 +328,7 @@ fn parseInner(comptime T: type, ctx: *ParseCtx, command_path: []const u8) ParseE
                     const last_field = comptime fields[indices[indices.len - 1]];
                     const Elem = @typeInfo(last_field.type).pointer.child;
 
-                    try tail.append(ctx.alloc, try parseValue(Elem, ctx, arg, comptime util.longName(last_field)));
+                    try tail.append(ctx.inner.alloc, try parseValue(Elem, &ctx.inner, arg, comptime util.longName(last_field)));
 
                     pos_idx += 1;
                     continue;
@@ -309,9 +336,9 @@ fn parseInner(comptime T: type, ctx: *ParseCtx, command_path: []const u8) ParseE
             }
 
             if (pos_idx >= indices.len)
-                return fail(ctx, error.UnexpectedArgument, "unexpected argument \"{s}\"", .{arg});
+                return fail(&ctx.inner, error.UnexpectedArgument, "unexpected argument \"{s}\"", .{arg});
 
-            try assignField(T, &result, &seen_fields, indices[pos_idx], ctx, arg, null);
+            try assignField(T, &result, &seen_fields, indices[pos_idx], &ctx.inner, arg, null);
             pos_idx += 1;
         } else if (comptime mode == .Subcommand) {
             const subcommand_field = comptime util.subcommandField(T).?;
@@ -323,7 +350,7 @@ fn parseInner(comptime T: type, ctx: *ParseCtx, command_path: []const u8) ParseE
             @field(result, subcommand_field.name) = try parseSubcommand(Union, ctx, arg, command_path);
             seen_fields.set(comptime util.subcommandFieldIndex(T).?);
         } else {
-            return fail(ctx, error.UnexpectedArgument, "unexpected argument \"{s}\"", .{arg});
+            return fail(&ctx.inner, error.UnexpectedArgument, "unexpected argument \"{s}\"", .{arg});
         }
     }
 
@@ -335,7 +362,7 @@ fn parseInner(comptime T: type, ctx: *ParseCtx, command_path: []const u8) ParseE
                 break :blk indices[indices.len - 1];
             };
 
-            @field(result, fields[last_idx].name) = try tail.toOwnedSlice(ctx.alloc);
+            @field(result, fields[last_idx].name) = try tail.toOwnedSlice(ctx.inner.alloc);
             seen_fields.set(last_idx);
         }
     }
@@ -348,9 +375,9 @@ fn parseInner(comptime T: type, ctx: *ParseCtx, command_path: []const u8) ParseE
         const required = comptime (f.defaultValue() == null and @typeInfo(f.type) != .optional);
         if (required and !seen_fields.isSet(i)) {
             if (comptime util.isPositionalSlot(T, f.name))
-                return fail(ctx, error.MissingPositional, "missing required positional <{s}>", .{f.name});
+                return fail(&ctx.inner, error.MissingPositional, "missing required positional <{s}>", .{f.name});
 
-            return fail(ctx, error.MissingRequiredFlag, "missing required flag --{s}", .{comptime util.longName(f)});
+            return fail(&ctx.inner, error.MissingRequiredFlag, "missing required flag --{s}", .{comptime util.longName(f)});
         }
     }
 
@@ -359,23 +386,24 @@ fn parseInner(comptime T: type, ctx: *ParseCtx, command_path: []const u8) ParseE
 
 /// Matches `word` against the union's tag names and parses the payload from
 /// the remaining args. Owns (and frees) the command path it builds; help
-/// requests dupe it into the Diagnostics first.
-fn parseSubcommand(comptime U: type, ctx: *ParseCtx, word: []const u8, command_path: []const u8) ParseError!U {
+/// requests dupe it onto the context first. `ctx` is the outer
+/// `ParseCtx(Root)`.
+fn parseSubcommand(comptime U: type, ctx: anytype, word: []const u8, command_path: []const u8) ParseError!U {
     inline for (@typeInfo(U).@"union".fields) |uf| {
         if (std.mem.eql(u8, uf.name, word)) {
             const new_path = if (command_path.len > 0)
-                try std.fmt.allocPrint(ctx.alloc, "{s} {s}", .{ command_path, uf.name })
+                try std.fmt.allocPrint(ctx.inner.alloc, "{s} {s}", .{ command_path, uf.name })
             else
-                try ctx.alloc.dupe(u8, uf.name);
-            defer ctx.alloc.free(new_path);
+                try ctx.inner.alloc.dupe(u8, uf.name);
+            defer ctx.inner.alloc.free(new_path);
 
             if (comptime uf.type == void) {
                 // A payload-less command takes no further args, except help.
-                if (ctx.takeArg()) |next| {
+                if (ctx.inner.takeArg()) |next| {
                     if (std.mem.eql(u8, next, "-h") or std.mem.eql(u8, next, "--help"))
                         return helpRequested(ctx, new_path);
 
-                    return fail(ctx, error.UnexpectedArgument, "unexpected argument \"{s}\" after \"{s}\"", .{ next, new_path });
+                    return fail(&ctx.inner, error.UnexpectedArgument, "unexpected argument \"{s}\" after \"{s}\"", .{ next, new_path });
                 }
 
                 return @unionInit(U, uf.name, {});
@@ -385,13 +413,13 @@ fn parseSubcommand(comptime U: type, ctx: *ParseCtx, word: []const u8, command_p
         }
     }
 
-    return fail(ctx, error.UnknownCommand, "unknown command \"{s}\"", .{word});
+    return fail(&ctx.inner, error.UnknownCommand, "unknown command \"{s}\"", .{word});
 }
 
 /// Parses one value of type F. `value` is the inline `=value` part (or, for
 /// positionals, the word itself); otherwise the next arg is consumed.
 /// `display` is the user-facing spelling used in error messages.
-fn parseValue(comptime F: type, ctx: *ParseCtx, value: ?[:0]const u8, display: []const u8) ParseError!F {
+fn parseValue(comptime F: type, ctx: *ValueCtx, value: ?[:0]const u8, display: []const u8) ParseError!F {
     switch (@typeInfo(F)) {
         .bool => {
             if (value != null)
@@ -463,7 +491,7 @@ fn assignField(
     result: *T,
     seen: *std.StaticBitSet(@typeInfo(T).@"struct".fields.len),
     idx: usize,
-    ctx: *ParseCtx,
+    ctx: *ValueCtx,
     eq_value: ?[:0]const u8,
     display: ?[]const u8,
 ) ParseError!void {
@@ -543,11 +571,11 @@ test "parseInner: long, short and bundled flags" {
         };
     };
 
-    var ctx = ParseCtx.init(std.testing.allocator, &.{
+    var ctx = ParseCtx(T).init(std.testing.allocator, &.{
         "--config-path=/tmp/conf", "-vf", "--retries", "7", "--colour=always",
     }, null);
 
-    const r = try parseInner(T, &ctx, "");
+    const r = try ctx.parse();
 
     try std.testing.expect(r.verbose);
     try std.testing.expect(r.force);
@@ -567,12 +595,12 @@ test "parseInner: short flag with separate and =value" {
         };
     };
 
-    var ctx = ParseCtx.init(std.testing.allocator, &.{ "-c", "/a" }, null);
-    const r = try parseInner(T, &ctx, "");
+    var ctx = ParseCtx(T).init(std.testing.allocator, &.{ "-c", "/a" }, null);
+    const r = try ctx.parse();
     try std.testing.expectEqualStrings("/a", r.config_path.?);
 
-    var ctx2 = ParseCtx.init(std.testing.allocator, &.{"-vc=/b"}, null);
-    const r2 = try parseInner(T, &ctx2, "");
+    var ctx2 = ParseCtx(T).init(std.testing.allocator, &.{"-vc=/b"}, null);
+    const r2 = try ctx2.parse();
     try std.testing.expect(r2.verbose);
     try std.testing.expectEqualStrings("/b", r2.config_path.?);
 }
@@ -586,8 +614,8 @@ test "parseInner: positionals fill in order, flags interleaved" {
         pub const positionals = .{ .name, .pubkey };
     };
 
-    var ctx = ParseCtx.init(std.testing.allocator, &.{ "Jane", "--force", "pubkey123" }, null);
-    const r = try parseInner(T, &ctx, "");
+    var ctx = ParseCtx(T).init(std.testing.allocator, &.{ "Jane", "--force", "pubkey123" }, null);
+    const r = try ctx.parse();
 
     try std.testing.expectEqualStrings("Jane", r.name);
     try std.testing.expectEqualStrings("pubkey123", r.pubkey);
@@ -602,8 +630,8 @@ test "parseInner: variadic tail collects the rest" {
         pub const positionals = .{ .first, .rest };
     };
 
-    var ctx = ParseCtx.init(std.testing.allocator, &.{ "a", "b", "c" }, null);
-    const r = try parseInner(T, &ctx, "");
+    var ctx = ParseCtx(T).init(std.testing.allocator, &.{ "a", "b", "c" }, null);
+    const r = try ctx.parse();
     defer std.testing.allocator.free(r.rest);
 
     try std.testing.expectEqualStrings("a", r.first);
@@ -619,8 +647,8 @@ test "parseInner: -- ends flag parsing" {
         pub const positionals = .{.word};
     };
 
-    var ctx = ParseCtx.init(std.testing.allocator, &.{ "--", "--not-a-flag" }, null);
-    const r = try parseInner(T, &ctx, "");
+    var ctx = ParseCtx(T).init(std.testing.allocator, &.{ "--", "--not-a-flag" }, null);
+    const r = try ctx.parse();
 
     try std.testing.expectEqualStrings("--not-a-flag", r.word);
 }
@@ -635,28 +663,28 @@ test "parseInner: diagnostics on errors" {
 
     {
         var diag: Diagnostics = .{};
-        var ctx = ParseCtx.init(std.testing.allocator, &.{"--wat"}, &diag);
-        defer diag.deinit(&ctx);
+        var ctx = ParseCtx(T).init(std.testing.allocator, &.{"--wat"}, &diag);
+        defer diag.deinit(std.testing.allocator);
 
-        try std.testing.expectError(error.UnknownFlag, parseInner(T, &ctx, ""));
+        try std.testing.expectError(error.UnknownFlag, ctx.parse());
         try std.testing.expectEqualStrings("unknown flag --wat", diag.message);
     }
 
     {
         var diag: Diagnostics = .{};
-        var ctx = ParseCtx.init(std.testing.allocator, &.{}, &diag);
-        defer diag.deinit(&ctx);
+        var ctx = ParseCtx(T).init(std.testing.allocator, &.{}, &diag);
+        defer diag.deinit(std.testing.allocator);
 
-        try std.testing.expectError(error.MissingPositional, parseInner(T, &ctx, ""));
+        try std.testing.expectError(error.MissingPositional, ctx.parse());
         try std.testing.expectEqualStrings("missing required positional <name>", diag.message);
     }
 
     {
         var diag: Diagnostics = .{};
-        var ctx = ParseCtx.init(std.testing.allocator, &.{ "Jane", "--retries", "lots" }, &diag);
-        defer diag.deinit(&ctx);
+        var ctx = ParseCtx(T).init(std.testing.allocator, &.{ "Jane", "--retries", "lots" }, &diag);
+        defer diag.deinit(std.testing.allocator);
 
-        try std.testing.expectError(error.InvalidValue, parseInner(T, &ctx, ""));
+        try std.testing.expectError(error.InvalidValue, ctx.parse());
         try std.testing.expectEqualStrings("invalid integer \"lots\" for --retries", diag.message);
     }
 }
@@ -686,11 +714,11 @@ test "parseInner: subcommands route and recurse" {
         } = null,
     };
 
-    var ctx = ParseCtx.init(std.testing.allocator, &.{
+    var ctx = ParseCtx(Root).init(std.testing.allocator, &.{
         "--verbose", "peer", "add", "Jane", "pubkey123", "--force",
     }, null);
 
-    const r = try parseInner(Root, &ctx, "");
+    const r = try ctx.parse();
 
     try std.testing.expect(r.verbose);
 
@@ -708,15 +736,15 @@ test "parseInner: void subcommand takes no args" {
         } = null,
     };
 
-    var ctx = ParseCtx.init(std.testing.allocator, &.{"version"}, null);
-    const r = try parseInner(Root, &ctx, "");
+    var ctx = ParseCtx(Root).init(std.testing.allocator, &.{"version"}, null);
+    const r = try ctx.parse();
     try std.testing.expect(r.command.? == .version);
 
     var diag: Diagnostics = .{};
-    var ctx2 = ParseCtx.init(std.testing.allocator, &.{ "version", "extra" }, &diag);
-    defer diag.deinit(&ctx2);
+    var ctx2 = ParseCtx(Root).init(std.testing.allocator, &.{ "version", "extra" }, &diag);
+    defer diag.deinit(std.testing.allocator);
 
-    try std.testing.expectError(error.UnexpectedArgument, parseInner(Root, &ctx2, ""));
+    try std.testing.expectError(error.UnexpectedArgument, ctx2.parse());
     try std.testing.expectEqualStrings("unexpected argument \"extra\" after \"version\"", diag.message);
 }
 
@@ -728,10 +756,10 @@ test "parseInner: unknown command" {
     };
 
     var diag: Diagnostics = .{};
-    var ctx = ParseCtx.init(std.testing.allocator, &.{"walk"}, &diag);
-    defer diag.deinit(&ctx);
+    var ctx = ParseCtx(Root).init(std.testing.allocator, &.{"walk"}, &diag);
+    defer diag.deinit(std.testing.allocator);
 
-    try std.testing.expectError(error.UnknownCommand, parseInner(Root, &ctx, ""));
+    try std.testing.expectError(error.UnknownCommand, ctx.parse());
     try std.testing.expectEqualStrings("unknown command \"walk\"", diag.message);
 }
 
@@ -748,12 +776,11 @@ test "parseInner: help deep in the tree records the full path" {
         } = null,
     };
 
-    var diag: Diagnostics = .{};
-    var ctx = ParseCtx.init(std.testing.allocator, &.{ "peer", "add", "-h" }, &diag);
-    defer diag.deinit(&ctx);
+    var ctx = ParseCtx(Root).init(std.testing.allocator, &.{ "peer", "add", "-h" }, null);
+    defer ctx.deinit();
 
-    try std.testing.expectError(error.HelpRequested, parseInner(Root, &ctx, ""));
-    try std.testing.expectEqualStrings("peer add", diag.command_path);
+    try std.testing.expectError(error.HelpRequested, ctx.parse());
+    try std.testing.expectEqualStrings("peer add", ctx.command_path);
 }
 
 test "parseInner: help records the command path" {
@@ -761,10 +788,9 @@ test "parseInner: help records the command path" {
         verbose: bool = false,
     };
 
-    var diag: Diagnostics = .{};
-    var ctx = ParseCtx.init(std.testing.allocator, &.{"-h"}, &diag);
-    defer diag.deinit(&ctx);
+    var ctx = ParseCtx(T).init(std.testing.allocator, &.{"-h"}, null);
+    defer ctx.deinit();
 
     try std.testing.expectError(error.HelpRequested, parseInner(T, &ctx, "peer add"));
-    try std.testing.expectEqualStrings("peer add", diag.command_path);
+    try std.testing.expectEqualStrings("peer add", ctx.command_path);
 }

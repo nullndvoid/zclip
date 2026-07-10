@@ -319,7 +319,7 @@ fn validateField(
                 else => {},
             }
         },
-        else => complain("{s} has unsupported type {s}.\nConsider defining .parse(ctx: *Cli.ParseCtx) !T on your type.", .{ name, @typeName(T) }),
+        else => complain("{s} has unsupported type {s}.\nConsider defining .parse(ctx: *Cli.ValueCtx) !T on your type.", .{ name, @typeName(T) }),
     }
 }
 
