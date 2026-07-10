@@ -188,27 +188,26 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         return;
     }
 
-    var client_arena = std.heap.ArenaAllocator.init(gpa.allocator());
-    var client = try Client.init(io, &client_arena, .{
-        .socket_path = socket_path,
-    });
-    defer client.deinit();
-
     switch (command) {
         .daemon => unreachable,
 
         .peer => |peer| {
             if (peer.action) |act| {
+                var client_arena = std.heap.ArenaAllocator.init(gpa.allocator());
+                var client = try Client.init(io, &client_arena, .{
+                    .socket_path = socket_path,
+                });
+                defer client.deinit();
+
                 switch (act) {
                     .add => |add| {
                         _ = add; // autofix
                     },
                     .list => {
                         // TODO: Everything not under Daemon should go over the UNIX socket.
-                        const peers =
-                            if (cfg.daemon.peers) |peers|
-                                try printPeers(peers, gpa.allocator(), stdout_writer);
-                        _ = peers; // autofix
+                        const peers = try client.listPeers();
+
+                        try printPeers(peers, gpa.allocator(), stdout_writer);
                     },
                 }
             } else {
