@@ -23,6 +23,7 @@ const serde = @import("serde");
 const UnixSocket = @import("UnixSocket.zig");
 const Command = UnixSocket.Command;
 const CommandType = UnixSocket.CommandType;
+const Network = @import("Network.zig");
 
 const log = std.log.scoped(.Client);
 
@@ -34,6 +35,8 @@ pub const ClientError = error{
     ServerCommand,
     ReadFailed,
     WriteFailed,
+    ResponseTimedOut,
+    MissingResponse,
 } || Io.ConcurrentError || Io.Cancelable;
 
 pub const Opts = struct {
@@ -50,6 +53,7 @@ pub fn init(io: Io, arena: *ArenaAllocator, opts: Opts) !Client {
     const addr = try std.Io.net.UnixAddress.init(opts.socket_path);
     const stream = addr.connect(io) catch |err| {
         log.err("Could not connect to UNIX socket. Reason: {t}", .{err});
+        log.err("Is the daemon running? `zclip daemon`, or start the systemd service.", .{});
 
         return err;
     };
@@ -67,7 +71,12 @@ pub fn deinit(self: *Client) void {
     self.arena.deinit();
 }
 
-pub fn sendCommand(self: *Client, command: Command) !void {
+/// Gets a list of `Peer`'s from the daemon.
+pub fn listPeers(self: *Client) ClientError![]const Network.Peer {
+    return try self.sendCommand(.GetPeers) orelse return error.MissingResponse;
+}
+
+fn sendCommand(self: *Client, command: Command) !?Command {
     var read_buf: [4096]u8 = undefined;
     var write_buf: [4096]u8 = undefined;
 
@@ -77,15 +86,15 @@ pub fn sendCommand(self: *Client, command: Command) !void {
     const rdr = &sock_rdr.interface;
     const writer = &sock_writer.interface;
 
-    try self.sendCommandRw(rdr, writer, command);
+    return try self.sendCommandRw(rdr, writer, command);
 }
 
 const SelectTask = union(enum) {
     timer: Io.Cancelable!void,
-    read: anyerror!void,
+    read: anyerror!Command,
 };
 
-fn sendCommandRw(self: *Client, rdr: *Io.Reader, writer: *Io.Writer, command: Command) ClientError!void {
+fn sendCommandRw(self: *Client, rdr: *Io.Reader, writer: *Io.Writer, command: Command) ClientError!?Command {
     switch (command) {
         .Clip, .Pubkey => return error.ServerCommand,
         else => {},
@@ -102,7 +111,7 @@ fn sendCommandRw(self: *Client, rdr: *Io.Reader, writer: *Io.Writer, command: Co
         return error.WriteFailed;
     };
 
-    if (resp_tag == null) return;
+    if (resp_tag == null) return null;
 
     var select_tasks: [2]SelectTask = undefined;
     var select = Io.Select(SelectTask).init(self.io, &select_tasks);
@@ -119,9 +128,13 @@ fn sendCommandRw(self: *Client, rdr: *Io.Reader, writer: *Io.Writer, command: Co
     const res = try select.await();
     switch (res) {
         .read => |rd| {
-            rd catch |err| {
+            const cmd = rd catch |err| {
                 log.err("Failed to read daemon response. Reason: {t}", .{err});
+
+                return err;
             };
+
+            return cmd;
         },
         .timer => |resp| {
             resp catch |err| {
@@ -131,11 +144,13 @@ fn sendCommandRw(self: *Client, rdr: *Io.Reader, writer: *Io.Writer, command: Co
             };
 
             log.err("Wait for daemon response timed out.", .{});
+
+            return error.ResponseTimedOut;
         },
     }
 }
 
-fn readResponseHelper(self: *Client, rdr: *Io.Reader, expected_tag: CommandType) !void {
+fn readResponseHelper(self: *Client, rdr: *Io.Reader, expected_tag: CommandType) !Command {
     const reply = UnixSocket.readFramedCommand(rdr, self.arena.allocator(), .{}) catch |err| {
         log.err("Failed to read reply from daemon. Reason: {t}", .{err});
 
@@ -147,4 +162,6 @@ fn readResponseHelper(self: *Client, rdr: *Io.Reader, expected_tag: CommandType)
     if (tag != expected_tag) {
         log.err("Got unexpected reply from daemon. Expected {s} but got {s}", .{ @tagName(expected_tag), @tagName(tag) });
     }
+
+    return reply;
 }

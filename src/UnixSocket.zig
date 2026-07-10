@@ -42,6 +42,10 @@ pub const CommandType = enum {
     Pubkey,
     /// Either side may issue this if the command recieved was invalid.
     InvalidCommand,
+    /// Client wants the list of peers.
+    GetPeers,
+    /// Daemon returns the peer list.
+    Peers,
 };
 
 pub const Command = union(CommandType) {
@@ -50,6 +54,8 @@ pub const Command = union(CommandType) {
     GetPubkey,
     Pubkey: PublicKey,
     InvalidCommand,
+    GetPeers,
+    Peers: []Network.Peer,
 };
 
 clipboard: *zclip.Clipboard,
