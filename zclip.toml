@@ -1,4 +1,7 @@
-# Example zclip configuration file.
+# Example zclip configuration file. Updates in code will overwrite comments and formatting.
+# TODO: To write config entries on the daemon-end, use `zclip config [daemon/debugging]...`
+
+# A separate client config should be written to .config/zclip/zclip.toml. This will not be overwritten.
 
 [debugging]
 # 1024 * 1024 * 512 = 512MB. Might be useful to set for debugging purposes. 
