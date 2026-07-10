@@ -12,6 +12,7 @@
 // GNU General Public License for more details.
 
 //! Configuration for zclip. Pass an arena allocator in to manage lifetimes for you.
+//! You should call .deinit when done with this. Accepts absolute and relative paths.
 
 const std = @import("std");
 const Io = std.Io;
