@@ -58,11 +58,16 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
 
     const args = try minimal.args.toSlice(arena.allocator());
     var diag = Cli.Diagnostics{};
-    var ctx = Cli.ParseCtx(Cli.Opts).init(arena.allocator(), args[1..], &diag);
-    const help_cfg = .{
+    const help_cfg = Cli.HelpOpts{
         .program_name = "zclip",
         .program_desc = "A tool to share your clipboard across systems.",
     };
+
+    var ctx = Cli.ParseCtx(Cli.Opts).init(
+        arena.allocator(),
+        args[1..],
+        &diag,
+    );
 
     const cli_opts = ctx.parse() catch |err| {
         switch (err) {
