@@ -22,6 +22,7 @@ const serde = @import("serde");
 const zclip = @import("zclip");
 
 const Network = @import("Network.zig");
+const Config = @import("Config.zig");
 
 const log = std.log.scoped(.UNIX);
 
@@ -65,8 +66,17 @@ server: Io.net.Server,
 tasks: Io.Group,
 start_task: Io.Future(void),
 socket_path: []const u8,
+cfg: *Config,
+identity: Network.Identity,
 
-pub fn init(io: Io, clipboard: *zclip.Clipboard, alloc: Allocator, socket_path: []const u8) !UnixSocket {
+pub fn init(
+    io: Io,
+    clipboard: *zclip.Clipboard,
+    alloc: Allocator,
+    socket_path: []const u8,
+    cfg: *Config,
+    identity: Network.Identity,
+) !UnixSocket {
     var addr = try Io.net.UnixAddress.init(socket_path);
     const server = try addr.listen(io, .{});
 
@@ -78,6 +88,8 @@ pub fn init(io: Io, clipboard: *zclip.Clipboard, alloc: Allocator, socket_path: 
         .tasks = .init,
         .start_task = undefined,
         .socket_path = socket_path,
+        .cfg = cfg,
+        .identity = identity,
     };
 }
 
@@ -189,9 +201,11 @@ fn handleConnectionRw(self: *UnixSocket, rdr: *Io.Reader, writer: *Io.Writer) !v
         const reply: Command = switch (command) {
             .GetPubkey => .{
                 .Pubkey = .{
-                    // TODO: Implement stub.
-                    .pubkey = @splat(0x10),
+                    .pubkey = self.identity.public_key,
                 },
+            },
+            .GetPeers => .{
+                .Peers = self.cfg.get().daemon.peers orelse &.{},
             },
             else => continue,
         };

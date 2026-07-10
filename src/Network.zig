@@ -23,6 +23,8 @@ const b64 = std.base64.standard;
 
 const Serde = @import("serde");
 
+const AppConfig = @import("Config.zig");
+
 pub const Identity = @import("network/Identity.zig");
 const NoiseSession = @import("network/NoiseSession.zig");
 const Packet = @import("network/Packet.zig");

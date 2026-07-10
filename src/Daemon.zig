@@ -18,6 +18,7 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 
 const zclip = @import("zclip");
 
+const Config = @import("Config.zig");
 const Network = @import("Network.zig");
 const UnixSocket = @import("UnixSocket.zig");
 
@@ -30,6 +31,7 @@ clipboard: ?*zclip.Clipboard,
 select_tasks: ?Io.Select(TaskResults),
 select_tasks_buf: [2]TaskResults,
 identity: Network.Identity,
+cfg: *Config,
 
 const TaskResults = union(enum) {
     unix: void,
@@ -44,7 +46,7 @@ pub const Opts = struct {
     inet: Network.Config = .{},
 };
 
-pub fn init(io: Io, arena: *ArenaAllocator, identity: Network.Identity, opts: Opts) Daemon {
+pub fn init(io: Io, arena: *ArenaAllocator, identity: Network.Identity, cfg: *Config, opts: Opts) Daemon {
     return .{
         .io = io,
         .arena = arena,
@@ -53,6 +55,7 @@ pub fn init(io: Io, arena: *ArenaAllocator, identity: Network.Identity, opts: Op
         .select_tasks = null,
         .select_tasks_buf = undefined,
         .identity = identity,
+        .cfg = cfg,
     };
 }
 
@@ -78,7 +81,14 @@ pub fn start(self: *Daemon) !void {
     self.select_tasks = .init(self.io, &self.select_tasks_buf);
     defer self.select_tasks.?.cancelDiscard();
 
-    var unix = try UnixSocket.init(self.io, self.clipboard.?, self.arena.allocator(), self.opts.socket_path);
+    var unix = try UnixSocket.init(
+        self.io,
+        self.clipboard.?,
+        self.arena.allocator(),
+        self.opts.socket_path,
+        self.cfg,
+        self.identity,
+    );
     defer unix.deinit();
 
     try self.select_tasks.?.concurrent(.unix, UnixSocket.start, .{&unix});
