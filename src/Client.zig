@@ -37,6 +37,7 @@ pub const ClientError = error{
     WriteFailed,
     ResponseTimedOut,
     MissingResponse,
+    InvalidDaemonReply,
 } || Io.ConcurrentError || Io.Cancelable;
 
 pub const Opts = struct {
@@ -73,7 +74,16 @@ pub fn deinit(self: *Client) void {
 
 /// Gets a list of `Peer`'s from the daemon.
 pub fn listPeers(self: *Client) ClientError![]const Network.Peer {
-    return try self.sendCommand(.GetPeers) orelse return error.MissingResponse;
+    const reply = try self.sendCommand(.GetPeers) orelse return error.MissingResponse;
+
+    switch (reply) {
+        .Peers => |peers| {
+            return peers;
+        },
+        else => {
+            return error.InvalidDaemonReply;
+        },
+    }
 }
 
 fn sendCommand(self: *Client, command: Command) !?Command {
@@ -91,7 +101,7 @@ fn sendCommand(self: *Client, command: Command) !?Command {
 
 const SelectTask = union(enum) {
     timer: Io.Cancelable!void,
-    read: anyerror!Command,
+    read: ClientError!Command,
 };
 
 fn sendCommandRw(self: *Client, rdr: *Io.Reader, writer: *Io.Writer, command: Command) ClientError!?Command {
@@ -139,7 +149,7 @@ fn sendCommandRw(self: *Client, rdr: *Io.Reader, writer: *Io.Writer, command: Co
         .timer => |resp| {
             resp catch |err| {
                 switch (err) {
-                    error.Canceled => return,
+                    error.Canceled => return err,
                 }
             };
 
