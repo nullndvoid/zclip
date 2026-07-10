@@ -106,12 +106,13 @@ const SelectTask = union(enum) {
 
 fn sendCommandRw(self: *Client, rdr: *Io.Reader, writer: *Io.Writer, command: Command) ClientError!?Command {
     switch (command) {
-        .Clip, .Pubkey => return error.ServerCommand,
+        .Clip, .Pubkey, .Peers => return error.ServerCommand,
         else => {},
     }
 
     const resp_tag: ?CommandType = switch (command) {
         .GetPubkey => .Pubkey,
+        .GetPeers => .Peers,
         else => null,
     };
 
