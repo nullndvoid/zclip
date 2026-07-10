@@ -19,9 +19,15 @@ const Cli = @import("Cli.zig");
 const Client = @import("Client.zig");
 const Config = @import("Config.zig");
 const Daemon = @import("Daemon.zig");
+const Log = @import("Log.zig");
 const Network = @import("Network.zig");
 
 const log = std.log.scoped(.zclip);
+
+pub const std_options = std.Options{
+    .log_level = .debug,
+    .logFn = Log.logFn,
+};
 
 pub fn main(minimal: std.process.Init.Minimal) !void {
     var gpa = std.heap.DebugAllocator(.{
@@ -84,6 +90,8 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
 
         std.process.exit(1);
     };
+
+    Log.level = if (cli_opts.verbose) .debug else .info;
 
     var envmap = try minimal.environ.createMap(gpa.allocator());
     defer envmap.deinit();
