@@ -154,28 +154,48 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         inet_cfg.bind_addr = addr.addr;
     }
 
+    if (command == .daemon) {
+        const daemon_cli_opts = command.daemon;
+
+        const data_dir =
+            daemon_cli_opts.data_dir orelse
+            cfg.daemon.data_dir orelse
+            try Network.Identity.getWellKnownDir(io, arena.allocator(), &envmap);
+
+        const ident = try Network.Identity.getOrInit(
+            io,
+            arena.allocator(),
+            data_dir,
+        );
+
+        try select.concurrent(.daemon, runDaemon, .{
+            &arena,
+            ident,
+            Daemon.Opts{
+                .socket_path = socket_path,
+                .inet = inet_cfg,
+            },
+        });
+
+        const res = try select.await();
+        switch (res) {
+            .daemon => |result| result catch |err| {
+                log.err("daemon exited with error: {t}", .{err});
+            },
+            else => {},
+        }
+
+        return;
+    }
+
+    var client_arena = std.heap.ArenaAllocator.init(gpa.allocator());
+    var client = try Client.init(io, &client_arena, .{
+        .socket_path = socket_path,
+    });
+    defer client.deinit();
+
     switch (command) {
-        .daemon => |daemon_opts| {
-            const data_dir =
-                daemon_opts.data_dir orelse
-                cfg.daemon.data_dir orelse
-                try Network.Identity.getWellKnownDir(io, arena.allocator(), &envmap);
-
-            const ident = try Network.Identity.getOrInit(
-                io,
-                arena.allocator(),
-                data_dir,
-            );
-
-            try select.concurrent(.daemon, runDaemon, .{
-                &arena,
-                ident,
-                Daemon.Opts{
-                    .socket_path = socket_path,
-                    .inet = inet_cfg,
-                },
-            });
-        },
+        .daemon => unreachable,
 
         .peer => |peer| {
             if (peer.action) |act| {
@@ -185,44 +205,20 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
                     },
                     .list => {
                         // TODO: Everything not under Daemon should go over the UNIX socket.
-                        if (cfg.daemon.peers) |peers|
-                            try listPeers(peers, gpa.allocator(), stdout_writer);
+                        const peers =
+                            if (cfg.daemon.peers) |peers|
+                                try printPeers(peers, gpa.allocator(), stdout_writer);
+                        _ = peers; // autofix
                     },
                 }
             } else {
                 try ctx.writeHelp(help_cfg, writer);
             }
-
-            return;
         },
-    }
-
-    // switch (command) {
-    //     .Client => {
-    //         var client_arena = std.heap.ArenaAllocator.init(gpa.allocator());
-    //         var client = try Client.init(io, &client_arena, .{
-    //             .socket_path = socket_path,
-    //         });
-    //         defer client.deinit();
-
-    //         try client.sendCommand(.GetPubkey);
-
-    //         select.cancelDiscard();
-
-    //         return;
-    //     },
-    // }
-
-    const res = try select.await();
-    switch (res) {
-        .daemon => |result| result catch |err| {
-            log.err("daemon exited with error: {t}", .{err});
-        },
-        else => {},
     }
 }
 
-fn listPeers(peers: []const Network.Peer, alloc: Allocator, writer: *Io.Writer) !void {
+fn printPeers(peers: []const Network.Peer, alloc: Allocator, writer: *Io.Writer) !void {
     for (peers) |p| {
         const len = std.base64.standard.Encoder.calcSize(p.pubkey.len);
         const buf = try alloc.alloc(u8, len);
@@ -233,7 +229,7 @@ fn listPeers(peers: []const Network.Peer, alloc: Allocator, writer: *Io.Writer) 
         try writer.print("{s} ({s})\n", .{ p.nickname, pubkey });
     }
 
-    try writer.writeAll("\n\n");
+    try writer.writeAll("\n");
     try writer.flush();
 }
 
