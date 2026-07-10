@@ -26,6 +26,10 @@ pub const ParseCtx = Parse.ParseCtx;
 pub const ValueCtx = Parse.ValueCtx;
 pub const Diagnostics = Parse.Diagnostics;
 pub const ParseError = Parse.ParseError;
+
+const Help = @import("cli/Help.zig");
+pub const HelpOpts = Help.Opts;
+
 const Validate = @import("cli/Validate.zig");
 const Network = @import("Network.zig");
 
