@@ -80,9 +80,19 @@ pub fn listPeers(self: *Client) ClientError![]const Network.Peer {
         .Peers => |peers| {
             return peers;
         },
-        else => {
-            return error.InvalidDaemonReply;
+        else => return error.InvalidDaemonReply,
+    }
+}
+
+// This is not base64 encoded. You should do this as needed.
+pub fn getPubkey(self: *Client) ClientError![32]u8 {
+    const reply = try self.sendCommand(.GetPubkey) orelse return error.MissingResponse;
+
+    switch (reply) {
+        .Pubkey => |pubkey| {
+            return pubkey.pubkey;
         },
+        else => return error.InvalidDaemonReply,
     }
 }
 
