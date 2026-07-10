@@ -87,7 +87,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
 
         log.err("Could not parse args. Reason: {t}", .{err});
         log.err("Message: {s}", .{diag.message});
-
+        try writer.print("Use zclip --help for an overview of options.", .{});
         std.process.exit(1);
     };
 
