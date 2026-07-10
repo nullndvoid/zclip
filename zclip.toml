@@ -22,7 +22,7 @@ bind_address = "127.0.0.1"
 [[daemon.peers]]
 # As we can see, Bob is just a peer I made up for testing purposes.
 nickname = "Bob"
-pubkey = ""
+pubkey = "Y+xygwe8zSCfUNBiVq6tmKPT/2Q1tzSfTfKU+5+5mVE="
 addr = "127.0.0.1:48501"
 
 [client]

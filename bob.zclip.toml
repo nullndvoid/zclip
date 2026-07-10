@@ -21,7 +21,7 @@ data_dir = "./data"
 # A keypair is generated on first launch of the daemon.
 [[daemon.peers]]
 nickname = "Alice"
-pubkey = "D2yR0SKYRqi2tw7TYM3Syk8IR01ajnYNtLOChNNVGQk="
+pubkey = "4EIP8HSpq2hx2jhqVOPWXf5Ri0JTdzTa5iP6091VTDc="
 addr = "127.0.0.1:48500"
 
 [client]
