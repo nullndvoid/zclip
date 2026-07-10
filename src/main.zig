@@ -46,6 +46,11 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     var arena = std.heap.ArenaAllocator.init(gpa.allocator());
     defer arena.deinit();
 
+    const stdout = std.Io.File.stdout();
+    var stdout_buf: [1024]u8 = undefined;
+    var stdout_fw = stdout.writer(io, &stdout_buf);
+    const stdout_writer = &stdout_fw.interface;
+
     const stderr = std.Io.File.stderr();
     var stderr_buf: [1024]u8 = undefined;
     var stderr_fw = stderr.writer(io, &stderr_buf);
@@ -53,14 +58,16 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
 
     const args = try minimal.args.toSlice(arena.allocator());
     var diag = Cli.Diagnostics{};
-    var parse_ctx = Cli.ParseCtx.init(arena.allocator(), args[1..], &diag);
-    const cli_opts = Cli.parse(Cli.Opts, &parse_ctx) catch |err| {
+    var ctx = Cli.ParseCtx(Cli.Opts).init(arena.allocator(), args[1..], &diag);
+    const help_cfg = .{
+        .program_name = "zclip",
+        .program_desc = "A tool to share your clipboard across systems.",
+    };
+
+    const cli_opts = ctx.parse() catch |err| {
         switch (err) {
             error.HelpRequested => {
-                try Cli.Help.writeHelp(Cli.Opts, .{
-                    .program_name = "zclip",
-                    .program_desc = "A tool to share your clipboard across systems.",
-                }, writer);
+                try ctx.writeHelp(help_cfg, writer);
 
                 return;
             },
@@ -68,7 +75,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         }
 
         log.err("Could not parse args. Reason: {t}", .{err});
-        if (parse_ctx.diag) |d| log.err("Message: {s}", .{d.message});
+        log.err("Message: {s}", .{diag.message});
 
         std.process.exit(1);
     };
@@ -107,10 +114,9 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         cfg.client.unix_socket_address orelse
         try getSocketPath(arena.allocator(), minimal.environ);
 
-    // Get our own identity.
     if (cli_opts.command == null) {
-        log.err("Please provide a command!", .{});
-        std.process.exit(1);
+        try ctx.writeHelp(help_cfg, writer);
+        return;
     }
 
     const command = cli_opts.command.?;
@@ -159,7 +165,18 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         },
 
         .peer => |peer| {
-            _ = peer; // autofix
+            if (peer.action) |act| {
+                switch (act) {
+                    .add => |add| {
+                        _ = add; // autofix
+                    },
+                    .list => {
+                        // TODO: Everything not under Daemon should go over the UNIX socket.
+                        if (cfg.daemon.peers) |peers|
+                            try listPeers(peers, gpa.allocator(), stdout_writer);
+                    },
+                }
+            }
         },
     }
 
@@ -186,6 +203,20 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         },
         else => {},
     }
+}
+
+fn listPeers(peers: []const Network.Peer, alloc: Allocator, writer: *Io.Writer) !void {
+    for (peers) |p| {
+        const len = std.base64.standard.Encoder.calcSize(p.pubkey.len);
+        const buf = try alloc.alloc(u8, len);
+        defer alloc.free(buf);
+
+        const pubkey = std.base64.standard.Encoder.encode(buf, p.pubkey);
+
+        try writer.print("{s} ({s})", .{ p.nickname, pubkey });
+    }
+
+    try writer.flush();
 }
 
 /// TODO: Support Windows. Caller is responsible for freeing returned memory.
