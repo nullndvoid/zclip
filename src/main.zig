@@ -189,7 +189,11 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
                             try listPeers(peers, gpa.allocator(), stdout_writer);
                     },
                 }
+            } else {
+                try ctx.writeHelp(help_cfg, writer);
             }
+
+            return;
         },
     }
 
@@ -226,9 +230,10 @@ fn listPeers(peers: []const Network.Peer, alloc: Allocator, writer: *Io.Writer) 
 
         const pubkey = std.base64.standard.Encoder.encode(buf, p.pubkey);
 
-        try writer.print("{s} ({s})", .{ p.nickname, pubkey });
+        try writer.print("{s} ({s})\n", .{ p.nickname, pubkey });
     }
 
+    try writer.writeAll("\n\n");
     try writer.flush();
 }
 
