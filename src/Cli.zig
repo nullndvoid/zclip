@@ -51,6 +51,11 @@ pub const PeerOpts = struct {
         add: PeerAdd,
         list: void,
 
+        pub const help = .{
+            .add = .{ .desc = "Add a peer by name and public key" },
+            .list = .{ .desc = "List known peers" },
+        };
+
         pub const PeerAdd = struct {
             name: []const u8,
             pubkey: []const u8,
@@ -68,6 +73,11 @@ pub const PeerOpts = struct {
 const Subcommand = union(enum) {
     daemon: DaemonOpts,
     peer: PeerOpts,
+
+    pub const help = .{
+        .daemon = .{ .desc = "Run the zclip daemon" },
+        .peer = .{ .desc = "Manage trusted peers" },
+    };
 };
 
 pub const Opts = struct {

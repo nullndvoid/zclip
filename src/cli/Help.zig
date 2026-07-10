@@ -191,16 +191,16 @@ fn subcommands(comptime T: type, comptime _: Opts) []const Subcommand {
     comptime {
         var subcoms: []const Subcommand = &.{};
 
-        for (@typeInfo(T).@"struct".fields) |f| {
-            if (util.isSubcommand(T, f.name)) {
-                // Iterate over field names.
-                for (@typeInfo(@typeInfo(util.subcommandField(T).?.type).optional.child).@"union".fields) |uf| {
-                    subcoms = subcoms ++ .{Subcommand{
-                        .name = uf.name,
-                        .description = null, // TODO:
-                    }};
-                }
-            }
+        const sub = util.subcommandField(T) orelse return subcoms;
+        const Union = @typeInfo(sub.type).optional.child;
+
+        // Descriptions come from a `help` decl on the union itself, keyed by
+        // subcommand name. Void subcommands cannot carry decls of their own.
+        for (@typeInfo(Union).@"union".fields) |uf| {
+            subcoms = subcoms ++ .{Subcommand{
+                .name = uf.name,
+                .description = util.descriptionOf(Union, uf.name),
+            }};
         }
 
         return subcoms;
@@ -233,16 +233,29 @@ test "writeHelpForPath selects the level named by the command path" {
         command: ?union(enum) {
             peer: PeerOpts,
             version: void,
+
+            pub const help = .{
+                .peer = .{ .desc = "Manage peers" },
+                .version = .{ .desc = "Print the version" },
+            };
         } = null,
     };
 
     var aw = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer aw.deinit();
 
-    // "" -> Root: shows root subcommands, not peer's flags.
+    // "" -> Root: shows root subcommands with their descriptions, not peer's flags.
     try writeHelpForPath(Root, .{ .program_name = "tool" }, "", &aw.writer);
     try std.testing.expect(std.mem.indexOf(u8, aw.written(), "peer") != null);
+    try std.testing.expect(std.mem.indexOf(u8, aw.written(), "Manage peers") != null);
+    try std.testing.expect(std.mem.indexOf(u8, aw.written(), "Print the version") != null);
     try std.testing.expect(std.mem.indexOf(u8, aw.written(), "--force") == null);
+
+    // "peer" -> PeerOpts: its action union has no help decl, so bare names.
+    aw.clearRetainingCapacity();
+    try writeHelpForPath(Root, .{ .program_name = "tool" }, "peer", &aw.writer);
+    try std.testing.expect(std.mem.indexOf(u8, aw.written(), "add") != null);
+    try std.testing.expect(std.mem.indexOf(u8, aw.written(), "Manage peers") == null);
 
     // "peer add" -> PeerAdd: shows its flags and positionals.
     aw.clearRetainingCapacity();

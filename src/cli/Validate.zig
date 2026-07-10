@@ -251,8 +251,45 @@ fn validateSubcommandUnion(comptime T: type, comptime F: type) void {
                     else => complain("{s}: subcommand union tag {s} should be void or struct.", .{ typeName(T), f.name }),
                 }
             }
+
+            if (@hasDecl(F, "help"))
+                validateSubcommandHelp(F);
         },
         else => complain("{s}: unexpected {s} where union(enum) was expected. This may be a bug.", .{ typeName(T), typeName(F) }),
+    }
+}
+
+/// Validates a `help` decl on a subcommand union: entries are keyed by
+/// subcommand name and hold only a `desc`, e.g.
+///
+/// ```zig
+/// pub const help = .{
+///     .daemon = .{ .desc = "Run the daemon" },
+/// };
+/// ```
+fn validateSubcommandHelp(comptime U: type) void {
+    const help = U.help;
+    const Help = @TypeOf(help);
+
+    if (@typeInfo(Help) != .@"struct")
+        complain("{s}.help must be a struct value, e.g. `pub const help = .{{ ... }};`", .{typeName(U)});
+
+    inline for (@typeInfo(Help).@"struct".fields) |hf| {
+        if (!@hasField(U, hf.name))
+            complain("{s}.help got invalid subcommand name: {s}", .{ typeName(U), hf.name });
+
+        const entry = @field(help, hf.name);
+        const Entry = @TypeOf(entry);
+
+        if (@typeInfo(Entry) != .@"struct" or !@hasField(Entry, "desc"))
+            complain("{s}.help.{s} should be a struct: .{{ .desc = \"...\" }}", .{ typeName(U), hf.name });
+
+        if (!isString(@TypeOf(entry.desc)))
+            complain("{s}.{s} help description should be a string!", .{ typeName(U), hf.name });
+
+        // Defaults make no sense for subcommands, so only desc is recognized.
+        if (@typeInfo(Entry).@"struct".fields.len > 1)
+            complain("{s}.{s} help has unknown fields. Only `desc` is recognized for subcommands.", .{ typeName(U), hf.name });
     }
 }
 
@@ -642,6 +679,11 @@ test "subcommands: nested tree with positionals, help and custom types" {
                 pub const positionals = .{.name};
             },
             list: void,
+
+            pub const help = .{
+                .add = .{ .desc = "Add a new peer" },
+                .list = .{ .desc = "List known peers" },
+            };
         } = null,
     };
 
