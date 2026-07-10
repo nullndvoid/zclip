@@ -37,9 +37,12 @@ path: []const u8,
 dir: Io.Dir,
 io: Io,
 alloc: Allocator,
+should_close: bool = true,
 
 pub fn deinit(self: *Config) void {
-    self.dir.close(self.io);
+    if (self.should_close) {
+        self.dir.close(self.io);
+    }
 }
 
 /// Wrapped in Config because we want to manage the lifetimes of data allocated but
@@ -78,7 +81,7 @@ fn toSlice(cfg: InnerConfig, allocator: Allocator) ![]const u8 {
     return try Serde.toml.toSlice(allocator, cfg);
 }
 
-fn parseSlice(io: Io, allocator: Allocator, data: []const u8, path: []const u8, dir: Io.Dir) !Config {
+fn parseSlice(io: Io, allocator: Allocator, data: []const u8, path: []const u8, dir: Io.Dir, should_close: bool) !Config {
     const cfg = Serde.toml.fromSlice(InnerConfig, allocator, data) catch |err| {
         log.err("Error parsing config at {s}: {t}", .{ path, err });
         return err;
@@ -90,11 +93,12 @@ fn parseSlice(io: Io, allocator: Allocator, data: []const u8, path: []const u8, 
         .io = io,
         .alloc = allocator,
         .dir = dir,
+        .should_close = should_close,
     };
 }
 
 /// The opened dir must outlive Config. Just call deinit on this Config.
-fn fromPathWithDir(io: Io, dir: Io.Dir, allocator: Allocator, path: []const u8) !Config {
+fn fromPathWithDir(io: Io, dir: Io.Dir, allocator: Allocator, path: []const u8, should_close: bool) !Config {
     var config = dir.openFile(io, path, .{}) catch |err| {
         switch (err) {
             error.FileNotFound => {
@@ -116,11 +120,11 @@ fn fromPathWithDir(io: Io, dir: Io.Dir, allocator: Allocator, path: []const u8) 
     const bytes = try rdr.allocRemaining(allocator, .unlimited);
     defer allocator.free(bytes);
 
-    return try parseSlice(io, allocator, bytes, try allocator.dupe(u8, path), dir);
+    return try parseSlice(io, allocator, bytes, try allocator.dupe(u8, path), dir, should_close);
 }
 
 pub fn fromPath(io: Io, allocator: Allocator, path: []const u8) !Config {
-    return try fromPathWithDir(io, Io.Dir.cwd(), allocator, path);
+    return try fromPathWithDir(io, Io.Dir.cwd(), allocator, path, false);
 }
 
 /// TODO: Use a Well known location e.g. $XDG_CONFIG_DIR/zclip/zclip.zon.
@@ -184,6 +188,7 @@ test "read config" {
     defer arena.deinit();
 
     const tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
 
     // Write the config to test/config.toml.
     {
@@ -210,7 +215,8 @@ test "read config" {
         try writer.flush();
     }
 
-    const cfg = try Config.fromPathWithDir(io, tmp_dir.dir, arena.allocator(), "config.toml");
+    const cfg = try Config.fromPathWithDir(io, tmp_dir.dir, arena.allocator(), "config.toml", false);
+    defer cfg.deinit();
 
     const data = cfg.get();
 
@@ -232,6 +238,8 @@ test Config {
 
     {
         var cfg = try Config.fromPath(io, arena.allocator(), "/tmp/zclip.toml");
+        defer cfg.deinit();
+
         var cfg_data = cfg.get();
 
         const peers = cfg_data.daemon.peers;
@@ -248,7 +256,8 @@ test Config {
     var tmp_dir = try Io.Dir.openDirAbsolute(io, "/tmp", .{});
     defer tmp_dir.close(io);
 
-    var cfg = try Config.fromPathWithDir(io, tmp_dir, arena.allocator(), "zclip.toml");
+    var cfg = try Config.fromPathWithDir(io, tmp_dir, arena.allocator(), "zclip.toml", false);
+    defer cfg.deinit();
 
     const cfg_data = cfg.get();
 
