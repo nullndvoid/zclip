@@ -105,7 +105,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         config = try Config.fromWellKnown(io, arena.allocator(), &envmap);
     }
 
-    const cfg = config.data;
+    const cfg = config.get();
 
     if (cfg.debugging.memory_limit) |limit| {
         gpa.requested_memory_limit = limit;
@@ -171,6 +171,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         try select.concurrent(.daemon, runDaemon, .{
             &arena,
             ident,
+            &config,
             Daemon.Opts{
                 .socket_path = socket_path,
                 .inet = inet_cfg,
@@ -276,8 +277,8 @@ fn waitForInterruptPosix() std.Io.Cancelable!void {
     log.info("Got a signal, stopping gracefully...", .{});
 }
 
-fn runDaemon(arena: *std.heap.ArenaAllocator, identity: Network.Identity, opts: Daemon.Opts) (std.Io.Cancelable || anyerror)!void {
-    var daemon = Daemon.init(io, arena, identity, opts);
+fn runDaemon(arena: *std.heap.ArenaAllocator, identity: Network.Identity, cfg: *Config, opts: Daemon.Opts) (std.Io.Cancelable || anyerror)!void {
+    var daemon = Daemon.init(io, arena, identity, cfg, opts);
     defer daemon.deinit();
 
     try daemon.start();
