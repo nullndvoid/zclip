@@ -191,7 +191,20 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
 
     switch (command) {
         .daemon => unreachable,
+        .ident => {
+            var client_arena = std.heap.ArenaAllocator.init(gpa.allocator());
+            var client = try Client.init(io, &client_arena, .{
+                .socket_path = socket_path,
+            });
+            defer client.deinit();
 
+            const pubkey_bytes = try client.getPubkey();
+            const pubkey = try base64encode(&pubkey_bytes, gpa.allocator());
+            defer gpa.allocator().free(pubkey);
+
+            try stdout_writer.writeAll(pubkey);
+            try stdout_writer.flush();
+        },
         .peer => |peer| {
             if (peer.action) |act| {
                 var client_arena = std.heap.ArenaAllocator.init(gpa.allocator());
@@ -218,13 +231,20 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     }
 }
 
+/// Caller should free the returned buffer.
+fn base64encode(bytes: []const u8, alloc: Allocator) ![]const u8 {
+    const len = std.base64.standard.Encoder.calcSize(bytes.len);
+    const buf = try alloc.alloc(u8, len);
+
+    const pubkey = std.base64.standard.Encoder.encode(buf, bytes);
+
+    return pubkey;
+}
+
 fn printPeers(peers: []const Network.Peer, alloc: Allocator, writer: *Io.Writer) !void {
     for (peers) |p| {
-        const len = std.base64.standard.Encoder.calcSize(p.pubkey.len);
-        const buf = try alloc.alloc(u8, len);
-        defer alloc.free(buf);
-
-        const pubkey = std.base64.standard.Encoder.encode(buf, p.pubkey);
+        const pubkey = try base64encode(p.pubkey, alloc);
+        defer alloc.free(pubkey);
 
         try writer.print("{s} ({s})\n", .{ p.nickname, pubkey });
     }

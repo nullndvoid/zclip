@@ -73,10 +73,12 @@ pub const PeerOpts = struct {
 const Subcommand = union(enum) {
     daemon: DaemonOpts,
     peer: PeerOpts,
+    ident: void,
 
     pub const help = .{
         .daemon = .{ .desc = "Run the zclip daemon" },
         .peer = .{ .desc = "Manage trusted peers" },
+        .ident = .{ .desc = "Gets public key to share with peers" },
     };
 };
 

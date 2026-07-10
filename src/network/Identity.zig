@@ -131,7 +131,7 @@ pub fn getOrInit(io: Io, alloc: Allocator, data_dir: []const u8) !Identity {
                 const b64 = std.base64.standard.Encoder.encode(buf, &ident.public_key);
 
                 log.info("Created new identity keypair. Public key is {s}", .{b64});
-                log.info("On subsequent runs, you may call `zclip client ident` to fetch the public key", .{});
+                log.info("On subsequent runs, you may call `zclip ident` to fetch the public key", .{});
 
                 return ident;
             },
