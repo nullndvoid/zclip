@@ -227,6 +227,8 @@ test Config {
     const f = try Io.Dir.createFileAbsolute(io, "/tmp/zclip.toml", .{});
     f.close(io);
 
+    defer Io.Dir.deleteFileAbsolute(io, "/tmp/zclip.toml") catch {};
+
     {
         var cfg = try Config.fromPath(io, arena.allocator(), "/tmp/zclip.toml");
         var cfg_data = cfg.get();
