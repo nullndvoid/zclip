@@ -50,7 +50,7 @@
         },
         .noisey = .{
             .url = "https://codeberg.org/nullndvoid2/noisey/archive/dev.tar.gz",
-            .hash = "noisey-0.0.0-J6MA0chIBACX0T7tZZV7UKYzVVNbygpGW4RP5atvC274",
+            .hash = "noisey-0.0.0-J6MA0TdLBACZAeoJuvHEvps58GfEjvOIvr_4jycvxhAn",
         },
     },
     .paths = .{
