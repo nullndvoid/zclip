@@ -99,8 +99,9 @@ pub const ValueCtx = struct {
 pub fn ParseCtx(comptime T: type) type {
     return struct {
         inner: ValueCtx,
-        /// The command level help was requested at, e.g. "" for the root
-        /// or "peer add" under a subcommand.
+        /// The deepest command level parsing reached, e.g. "" for the root
+        /// or "peer add" under a subcommand. Updated as subcommands are
+        /// entered and on explicit help requests.
         command_path: []const u8 = "",
 
         const Self = @This();
@@ -121,8 +122,8 @@ pub fn ParseCtx(comptime T: type) type {
             return try parseInner(T, self, "");
         }
 
-        /// Writes help for the command level recorded during parsing;
-        /// before any help request this is the root level.
+        /// Writes help for the deepest command level reached during
+        /// parsing; before any parse this is the root level.
         pub fn writeHelp(self: *Self, comptime opts: Help.Opts, writer: *std.Io.Writer) !void {
             try Help.writeHelpForPath(T, opts, self.command_path, writer);
         }
@@ -230,10 +231,21 @@ fn fail(ctx: *ValueCtx, err: ParseError, comptime fmt: []const u8, args: anytype
     return err;
 }
 
+/// Records the command level reached, e.g. "peer add". `ctx` is the outer
+/// `ParseCtx(Root)`.
+fn setCommandPath(ctx: anytype, command_path: []const u8) void {
+    const new = ctx.inner.alloc.dupe(u8, command_path) catch "";
+
+    if (ctx.command_path.len > 0)
+        ctx.inner.alloc.free(ctx.command_path);
+
+    ctx.command_path = new;
+}
+
 /// Records which command level help was requested for, e.g. "peer add".
 /// `ctx` is the outer `ParseCtx(Root)`.
 fn helpRequested(ctx: anytype, command_path: []const u8) ParseError {
-    ctx.command_path = ctx.inner.alloc.dupe(u8, command_path) catch "";
+    setCommandPath(ctx, command_path);
 
     return error.HelpRequested;
 }
@@ -244,9 +256,15 @@ fn parseInner(comptime T: type, ctx: anytype, command_path: []const u8) ParseErr
     var result: T = undefined;
     const fields = @typeInfo(T).@"struct".fields;
 
-    // Init any default fields.
+    // Init any default fields. Optionals without an explicit default fall
+    // back to null: the required-field check below exempts optionals, so
+    // they must never be left undefined.
     inline for (fields) |f| {
-        @field(result, f.name) = f.defaultValue() orelse continue;
+        if (f.defaultValue()) |default| {
+            @field(result, f.name) = default;
+        } else if (comptime @typeInfo(f.type) == .optional) {
+            @field(result, f.name) = null;
+        }
     }
 
     var seen_fields = std.StaticBitSet(fields.len).empty;
@@ -396,6 +414,10 @@ fn parseSubcommand(comptime U: type, ctx: anytype, word: []const u8, command_pat
             else
                 try ctx.inner.alloc.dupe(u8, uf.name);
             defer ctx.inner.alloc.free(new_path);
+
+            // Remember how deep we got so `writeHelp` after a successful
+            // parse shows this command's help, not the root's.
+            setCommandPath(ctx, new_path);
 
             if (comptime uf.type == void) {
                 // A payload-less command takes no further args, except help.
@@ -689,6 +711,27 @@ test "parseInner: diagnostics on errors" {
     }
 }
 
+test "parseInner: optional fields without defaults become null" {
+    const T = struct {
+        socket_path: ?[]const u8,
+
+        action: ?union(enum) {
+            add: struct {
+                name: []const u8,
+
+                pub const positionals = .{.name};
+            },
+            list: void,
+        },
+    };
+
+    var ctx = ParseCtx(T).init(std.testing.allocator, &.{}, null);
+    const r = try ctx.parse();
+
+    try std.testing.expect(r.socket_path == null);
+    try std.testing.expect(r.action == null);
+}
+
 test "parseInner: subcommands route and recurse" {
     const PeerAdd = struct {
         name: []const u8,
@@ -717,6 +760,7 @@ test "parseInner: subcommands route and recurse" {
     var ctx = ParseCtx(Root).init(std.testing.allocator, &.{
         "--verbose", "peer", "add", "Jane", "pubkey123", "--force",
     }, null);
+    defer ctx.deinit();
 
     const r = try ctx.parse();
 
@@ -737,12 +781,14 @@ test "parseInner: void subcommand takes no args" {
     };
 
     var ctx = ParseCtx(Root).init(std.testing.allocator, &.{"version"}, null);
+    defer ctx.deinit();
     const r = try ctx.parse();
     try std.testing.expect(r.command.? == .version);
 
     var diag: Diagnostics = .{};
     var ctx2 = ParseCtx(Root).init(std.testing.allocator, &.{ "version", "extra" }, &diag);
     defer diag.deinit(std.testing.allocator);
+    defer ctx2.deinit();
 
     try std.testing.expectError(error.UnexpectedArgument, ctx2.parse());
     try std.testing.expectEqualStrings("unexpected argument \"extra\" after \"version\"", diag.message);
@@ -761,6 +807,36 @@ test "parseInner: unknown command" {
 
     try std.testing.expectError(error.UnknownCommand, ctx.parse());
     try std.testing.expectEqualStrings("unknown command \"walk\"", diag.message);
+}
+
+test "parseInner: successful parse records the deepest command path" {
+    const PeerOpts = struct {
+        action: ?union(enum) {
+            add: struct { name: ?[]const u8 = null },
+            list: void,
+        } = null,
+    };
+
+    const Root = struct {
+        command: ?union(enum) {
+            peer: PeerOpts,
+        } = null,
+    };
+
+    // Bare subcommand: `peer` with no action still records "peer" so the
+    // caller's writeHelp shows peer help rather than the root's.
+    var ctx = ParseCtx(Root).init(std.testing.allocator, &.{"peer"}, null);
+    defer ctx.deinit();
+
+    const r = try ctx.parse();
+    try std.testing.expect(r.command.?.peer.action == null);
+    try std.testing.expectEqualStrings("peer", ctx.command_path);
+
+    var ctx2 = ParseCtx(Root).init(std.testing.allocator, &.{ "peer", "add" }, null);
+    defer ctx2.deinit();
+
+    _ = try ctx2.parse();
+    try std.testing.expectEqualStrings("peer add", ctx2.command_path);
 }
 
 test "parseInner: help deep in the tree records the full path" {
