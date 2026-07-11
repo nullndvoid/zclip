@@ -85,10 +85,6 @@ pub fn getConnectable(ident: Identity, peers: []const Peer, alloc: Allocator) ![
     return try out.toOwnedSlice(alloc);
 }
 
-pub fn getPeers(repo: *Repo) ![]const Peer {
-    _ = repo; // autofix
-}
-
 pub fn init(io: Io, arena: *Arena, identity: Identity, repo: *Repo, config: Config) !Network {
     const connectable = try getConnectable(identity, config.peers, arena.allocator());
 
