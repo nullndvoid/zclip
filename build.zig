@@ -80,6 +80,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const sqlite = b.dependency("sqlite", .{});
 
     const exe = b.addExecutable(.{
         .name = "zclip",
@@ -100,6 +101,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("known-folders", known_folders.module("known-folders"));
     exe.root_module.addImport("serde", serde.module("serde"));
     exe.root_module.addImport("noisey", noisey.module("noisey"));
+    exe.root_module.addImport("sqlite", sqlite.module("sqlite"));
 
     exe.root_module.addOptions("options", exe_options);
 
@@ -115,6 +117,7 @@ pub fn build(b: *std.Build) void {
     exe_check.root_module.addImport("known-folders", known_folders.module("known-folders"));
     exe_check.root_module.addImport("serde", serde.module("serde"));
     exe_check.root_module.addImport("noisey", noisey.module("noisey"));
+    exe_check.root_module.addImport("sqlite", sqlite.module("sqlite"));
 
     exe_check.root_module.addOptions("options", exe_options);
 
