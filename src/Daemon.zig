@@ -26,7 +26,7 @@ const UnixSocket = @import("UnixSocket.zig");
 const Daemon = @This();
 
 opts: Opts,
-arena: *ArenaAllocator,
+alloc: Allocator,
 io: Io,
 clipboard: ?*zclip.Clipboard,
 select_tasks: ?Io.Select(TaskResults),
@@ -48,10 +48,10 @@ pub const Opts = struct {
     data_dir: []const u8,
 };
 
-pub fn init(io: Io, arena: *ArenaAllocator, identity: Network.Identity, opts: Opts) Daemon {
+pub fn init(io: Io, alloc: Allocator, identity: Network.Identity, opts: Opts) Daemon {
     return .{
         .io = io,
-        .arena = arena,
+        .alloc = alloc,
         .opts = opts,
         .clipboard = null,
         .select_tasks = null,
@@ -69,19 +69,22 @@ fn clipCallback(clip: *zclip.Clip, _: *void) anyerror!void {
 
 /// Starts the daemon worker, blocking. May be cancelled by a signal. See signal handling in `main.zig`.
 pub fn start(self: *Daemon) !void {
+    var arena = ArenaAllocator.init(self.alloc);
+    defer arena.deinit();
+
     self.clipboard = try zclip.Clipboard.init(
         self.io,
-        self.arena,
+        &arena,
         self.opts.clipboard,
     );
 
     self.clipboard.?.setOnClip(void, clipCallback, @constCast(&{}));
 
-    const repo = try Repo.init(self.opts.data_dir, self.arena.allocator());
+    const repo = try Repo.init(self.opts.data_dir, self.alloc);
     self.repo = repo;
     defer self.repo.deinit();
 
-    var net = try Network.init(self.io, self.arena, self.identity, &self.repo, self.opts.inet);
+    var net = try Network.init(self.io, &arena, self.identity, &self.repo, self.opts.inet);
     defer net.deinit();
 
     self.select_tasks = .init(self.io, &self.select_tasks_buf);
@@ -90,7 +93,7 @@ pub fn start(self: *Daemon) !void {
     var unix = try UnixSocket.init(
         self.io,
         self.clipboard.?,
-        self.arena.allocator(),
+        self.alloc,
         self.opts.socket_path,
         self.identity,
         &self.repo,

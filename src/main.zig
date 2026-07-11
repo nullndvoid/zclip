@@ -165,7 +165,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         );
 
         try select.concurrent(.daemon, runDaemon, .{
-            &arena,
+            gpa.allocator(),
             ident,
             Daemon.Opts{
                 .socket_path = socket_path,
@@ -298,8 +298,8 @@ fn waitForInterruptPosix() std.Io.Cancelable!void {
     log.info("Got a signal, stopping gracefully...", .{});
 }
 
-fn runDaemon(arena: *std.heap.ArenaAllocator, identity: Network.Identity, opts: Daemon.Opts) (std.Io.Cancelable || anyerror)!void {
-    var daemon = Daemon.init(io, arena, identity, opts);
+fn runDaemon(alloc: Allocator, identity: Network.Identity, opts: Daemon.Opts) (std.Io.Cancelable || anyerror)!void {
+    var daemon = Daemon.init(io, alloc, identity, opts);
     defer daemon.deinit();
 
     try daemon.start();
