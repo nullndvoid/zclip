@@ -74,7 +74,7 @@ pub fn addPeer(
         \\ON CONFLICT (pubkey) DO UPDATE SET nickname = excluded.nickname, addr = excluded.addr;
     else
         \\INSERT INTO peers (nickname, addr, pubkey) VALUES (:nickname, :addr, :pubkey);
-        ;
+    ;
 
     const stmt = try repo.db.prepare(
         struct { nickname: Text, addr: ?Text, pubkey: Text },
@@ -110,11 +110,6 @@ pub fn getPeerById(repo: *Repo, id: u64) !Network.Peer {
     const peer = try select.step() orelse return error.NotFound;
 
     const net_peer = try toNetworkPeer(peer, repo.alloc);
-
-    repo.alloc.free(peer.nickname);
-    repo.alloc.free(peer.pubkey);
-
-    if (peer.addr) |addr| repo.alloc.free(addr);
 
     return net_peer;
 }
