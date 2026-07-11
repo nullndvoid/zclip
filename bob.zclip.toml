@@ -17,13 +17,6 @@ unix_socket_address = "./data/zclip_bob.sock"
 
 data_dir = "./data"
 
-# A list of (internet) peers. Pubkeys can be copied over out of band, similar to SSH.
-# A keypair is generated on first launch of the daemon.
-[[daemon.peers]]
-nickname = "Alice"
-pubkey = "o+FeMd627VQLQser1AC21ecXsYB1lmMTFZ02LEg1AXg="
-addr = "127.0.0.1:48500"
-
 [client]
 # Same rules apply as above. This should probably match daemon.unix_socket_address.
 
