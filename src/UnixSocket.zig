@@ -216,7 +216,7 @@ fn handleConnectionRw(self: *UnixSocket, rdr: *Io.Reader, writer: *Io.Writer) !v
             },
             .GetPeers => blk: {
                 var cmd: Command = undefined;
-                const peers = self.repo.getPeers() catch |err| {
+                const peers = self.repo.getPeers(arena.allocator()) catch |err| {
                     cmd = .{ .DaemonError = @errorName(err) };
                     break :blk cmd;
                 };

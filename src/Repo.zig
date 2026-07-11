@@ -26,7 +26,6 @@ const util = @import("util.zig");
 const Repo = @This();
 
 db: sqlite.Database,
-alloc: Allocator,
 
 pub fn init(data_dir: []const u8, alloc: Allocator) !Repo {
     const db_path = try std.fmt.allocPrintSentinel(
@@ -43,7 +42,7 @@ pub fn init(data_dir: []const u8, alloc: Allocator) !Repo {
 
     try initSchema(db);
 
-    return .{ .db = db, .alloc = alloc };
+    return .{ .db = db };
 }
 
 fn initSchema(db: sqlite.Database) !void {
@@ -114,7 +113,7 @@ pub fn getPeerById(repo: *Repo, id: u64) !Network.Peer {
     return net_peer;
 }
 
-pub fn getPeerByPubkey(repo: *Repo, pubkey: []const u8) !Network.Peer {
+pub fn getPeerByPubkey(repo: *Repo, pubkey: []const u8, alloc: Allocator) !Network.Peer {
     const select = try repo.db.prepare(
         struct { pubkey: sqlite.Text },
         models.NetworkPeer,
@@ -127,13 +126,13 @@ pub fn getPeerByPubkey(repo: *Repo, pubkey: []const u8) !Network.Peer {
     try select.bind(.{ .pubkey = .{ .data = pubkey } });
     const peer = try select.step() orelse return error.NotFound;
 
-    const net_peer = try toNetworkPeer(peer, repo.alloc);
+    const net_peer = try toNetworkPeer(peer, alloc);
 
     return net_peer;
 }
 
-/// Caller should free returned slice once done with it using repo.alloc.
-pub fn getPeers(repo: *Repo) ![]const Network.Peer {
+/// Caller should free returned slice once done with it using alloc.
+pub fn getPeers(repo: *Repo, alloc: Allocator) ![]const Network.Peer {
     const select = try repo.db.prepare(struct {}, models.NetworkPeer, "SELECT * FROM peers;");
     defer select.finalize();
 
@@ -144,10 +143,10 @@ pub fn getPeers(repo: *Repo) ![]const Network.Peer {
     try select.bind(.{});
 
     while (try select.step()) |peer| {
-        try out.append(repo.alloc, try toNetworkPeer(peer, repo.alloc));
+        try out.append(alloc, try toNetworkPeer(peer, alloc));
     }
 
-    return try out.toOwnedSlice(repo.alloc);
+    return try out.toOwnedSlice(alloc);
 }
 
 fn toNetworkPeer(peer: models.NetworkPeer, alloc: Allocator) !Network.Peer {

@@ -119,7 +119,7 @@ pub fn init(
     defer alloc.free(pubkey_b64);
 
     if (opts.initiator) {
-        peer = repo.getPeerByPubkey(pubkey_b64) catch |err| {
+        peer = repo.getPeerByPubkey(pubkey_b64, alloc) catch |err| {
             switch (err) {
                 error.NotFound => {
                     log.warn("This must be a bug. Attempted to connect to peer with pubkey {s} but was not found in the DB!", .{peer_pubkey.?});
@@ -159,7 +159,7 @@ pub fn init(
             const peer_pubkey_bytes = handshake.rs.?;
             pubkey_b64 = try util.base64encode(peer_pubkey_bytes, alloc);
 
-            peer = repo.getPeerByPubkey(pubkey_b64) catch |err| {
+            peer = repo.getPeerByPubkey(pubkey_b64, alloc) catch |err| {
                 switch (err) {
                     error.NotFound => {
                         log.warn("Peer tried connecting with unknown pubkey {s}. Aborting.", .{pubkey_b64});
