@@ -1,7 +1,4 @@
-# Example zclip configuration file. Updates in code will overwrite comments and formatting.
-# TODO: To write config entries on the daemon-end, use `zclip config [daemon/debugging]...`
-
-# A separate client config should be written to .config/zclip/zclip.toml. This will not be overwritten.
+# Example zclip configuration file.
 
 [debugging]
 # 1024 * 1024 * 512 = 512MB. Might be useful to set for debugging purposes. 
@@ -19,14 +16,6 @@ bind_address = "127.0.0.1"
 # This can be relative to cwd of the daemon/client, or absolute.
 
 # data_dir = "./zclip"
-
-# A list of (internet) peers. Pubkeys can be copied over out of band, similar to SSH.
-# A keypair is generated on first launch of the daemon.
-[[daemon.peers]]
-# As we can see, Bob is just a peer I made up for testing purposes.
-nickname = "Bob"
-pubkey = "Y+xygwe8zSCfUNBiVq6tmKPT/2Q1tzSfTfKU+5+5mVE="
-addr = "127.0.0.1:48501"
 
 [client]
 # Same rules apply as above. This should probably match daemon.unix_socket_address.

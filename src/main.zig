@@ -21,6 +21,8 @@ const Config = @import("Config.zig");
 const Daemon = @import("Daemon.zig");
 const Log = @import("log.zig");
 const Network = @import("Network.zig");
+const Repo = @import("Repo.zig");
+const util = @import("util.zig");
 
 const log = std.log.scoped(.zclip);
 
@@ -165,10 +167,10 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         try select.concurrent(.daemon, runDaemon, .{
             &arena,
             ident,
-            &config,
             Daemon.Opts{
                 .socket_path = socket_path,
                 .inet = inet_cfg,
+                .data_dir = data_dir,
             },
         });
 
@@ -193,7 +195,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             defer client.deinit();
 
             const pubkey_bytes = try client.getPubkey();
-            const pubkey = try base64encode(&pubkey_bytes, gpa.allocator());
+            const pubkey = try util.base64encode(&pubkey_bytes, gpa.allocator());
             defer gpa.allocator().free(pubkey);
 
             try stdout_writer.writeAll(pubkey);
@@ -224,19 +226,9 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     }
 }
 
-/// Caller should free the returned buffer.
-fn base64encode(bytes: []const u8, alloc: Allocator) ![]const u8 {
-    const len = std.base64.standard.Encoder.calcSize(bytes.len);
-    const buf = try alloc.alloc(u8, len);
-
-    const pubkey = std.base64.standard.Encoder.encode(buf, bytes);
-
-    return pubkey;
-}
-
 fn printPeers(peers: []const Network.Peer, alloc: Allocator, writer: *Io.Writer) !void {
     for (peers) |p| {
-        const pubkey = try base64encode(&p.pubkey, alloc);
+        const pubkey = try util.base64encode(&p.pubkey, alloc);
         defer alloc.free(pubkey);
 
         try writer.print("{s} ({s})\n", .{ p.nickname, pubkey });
@@ -290,8 +282,8 @@ fn waitForInterruptPosix() std.Io.Cancelable!void {
     log.info("Got a signal, stopping gracefully...", .{});
 }
 
-fn runDaemon(arena: *std.heap.ArenaAllocator, identity: Network.Identity, cfg: *Config, opts: Daemon.Opts) (std.Io.Cancelable || anyerror)!void {
-    var daemon = Daemon.init(io, arena, identity, cfg, opts);
+fn runDaemon(arena: *std.heap.ArenaAllocator, identity: Network.Identity, opts: Daemon.Opts) (std.Io.Cancelable || anyerror)!void {
+    var daemon = Daemon.init(io, arena, identity, opts);
     defer daemon.deinit();
 
     try daemon.start();

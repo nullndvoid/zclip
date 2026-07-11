@@ -22,6 +22,8 @@ const noisey = @import("noisey");
 const serde = @import("serde");
 
 const Network = @import("../Network.zig");
+const Repo = @import("../Repo.zig");
+const util = @import("../util.zig");
 
 const log = std.log.scoped(.NoiseSession);
 
@@ -68,9 +70,9 @@ pub fn init(
     rdr: *Io.Reader,
     writer: *Io.Writer,
     local_keypair: Network.Identity,
-    peer_map: *const Network.PeerMap,
     peer_pubkey: ?[]const u8,
     opts: Opts,
+    repo: *Repo,
 ) !NoiseSession {
     const read_buf = try alloc.alloc(u8, noisey.MAX_MESSAGE_LENGTH);
     errdefer alloc.free(read_buf);
@@ -108,7 +110,29 @@ pub fn init(
     var msg_buf: [256]u8 = undefined;
     var payload_buf: [256]u8 = undefined;
 
+    // Lookup in DB according to handshake rs.
+    var peer: ?Network.Peer = null;
+    var pubkey_b64: []const u8 = if (peer_pubkey) |pubkey|
+        try util.base64encode(pubkey, alloc)
+    else
+        undefined;
+    defer alloc.free(pubkey_b64);
+
     if (opts.initiator) {
+        peer = repo.getPeerByPubkey(pubkey_b64) catch |err| {
+            switch (err) {
+                error.NotFound => {
+                    log.warn("This must be a bug. Attempted to connect to peer with pubkey {s} but was not found in the DB!", .{peer_pubkey.?});
+                    // Should probably close the connection. Will handle this upstream.
+                    return error.UnknownPeer;
+                },
+                else => {
+                    log.err("Could not check peer in db. Why: {t}", .{err});
+                    return err;
+                },
+            }
+        };
+
         // e, es, s, ss
         const len0 = try handshake.writeMessage(&.{}, &msg_buf);
         try sendFrame(writer, msg_buf[0..len0]);
@@ -130,10 +154,24 @@ pub fn init(
             }
         };
 
-        if (!peer_map.contains(handshake.rs.?)) {
-            log.warn("Peer tried connecting with unknown pubkey. Aborting.", .{});
-            // Should probably close the connection. Will handle this upstream.
-            return error.UnknownPeer;
+        {
+            std.debug.assert(handshake.rs != null);
+            const peer_pubkey_bytes = handshake.rs.?;
+            pubkey_b64 = try util.base64encode(peer_pubkey_bytes, alloc);
+
+            peer = repo.getPeerByPubkey(pubkey_b64) catch |err| {
+                switch (err) {
+                    error.NotFound => {
+                        log.warn("Peer tried connecting with unknown pubkey {s}. Aborting.", .{pubkey_b64});
+                        // Should probably close the connection. Will handle this upstream.
+                        return error.UnknownPeer;
+                    },
+                    else => {
+                        log.err("Could not check peer in db. Why: {t}", .{err});
+                        return err;
+                    },
+                }
+            };
         }
 
         const l1 = try handshake.writeMessage(&.{}, &msg_buf);
@@ -146,6 +184,8 @@ pub fn init(
     states.@"0".cipher.pad = true;
     states.@"1".cipher.pad = true;
 
+    std.debug.assert(peer != null);
+
     return .{
         .io = io,
         .alloc = alloc,
@@ -155,7 +195,7 @@ pub fn init(
         .read_buf = read_buf,
         .write_buf = write_buf,
         .plain_buf = plain_buf,
-        .peer_nick = peer_map.get(handshake.rs.?).?,
+        .peer_nick = peer.?.nickname,
     };
 }
 

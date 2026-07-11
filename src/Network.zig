@@ -24,10 +24,10 @@ const b64 = std.base64.standard;
 const Serde = @import("serde");
 
 const AppConfig = @import("Config.zig");
-
 pub const Identity = @import("network/Identity.zig");
 const NoiseSession = @import("network/NoiseSession.zig");
 const Packet = @import("network/Packet.zig");
+const Repo = @import("Repo.zig");
 
 const log = std.log.scoped(.net);
 
@@ -38,15 +38,19 @@ arena: *Arena,
 server: Io.net.Server,
 tasks: Io.Group,
 start_task: Io.Future(void),
-/// Mapping from public keys to nicknames. If unexpected peers are found we can
-/// warn the user and drop the connection.
-peers: PeerMap,
-/// A set of nicknames in the config.
-nicks: std.StringHashMap(void),
+// /// Mapping from public keys to nicknames. If unexpected peers are found we can
+// /// warn the user and drop the connection.
+// peers: PeerMap,
+// /// A set of nicknames in the config.
+// nicks: std.StringHashMap(void),
+// /// Peers that this machine should attempt to connect to first.
+// to_connect: []const Peer,
+/// The list of peers this machine should attempt to connect to first.
+connectable: []const Peer,
 /// This daemon's identity.
 identity: Identity,
-/// Peers that this machine should attempt to connect to first.
-to_connect: []const Peer,
+/// The database connection.
+repo: *Repo,
 
 const Network = @This();
 
@@ -66,42 +70,38 @@ pub fn parseIp(ip: []const u8) !Io.net.IpAddress {
     return addr;
 }
 
-/// Alloc is assumed to use an arena.
-fn collectPeers(identity: Identity, peers: []const Peer, alloc: Allocator) !struct {
-    hashmap: PeerMap,
-    set: std.StringHashMap(void),
-    to_connect: []const Peer,
-} {
-    var hashmap = PeerMap.initContext(alloc, .{});
-    var set = std.StringHashMap(void).init(alloc);
-    var to_connect_al = std.ArrayList(Peer).empty;
+/// Returns a list of all peers that this daemon should attempt to connect to.
+/// Caller should free returned slice when done with it.
+///
+/// TODO: Could be called again later if we notice a new peer in the database?
+pub fn getConnectable(ident: Identity, peers: []const Peer, alloc: Allocator) ![]const Peer {
+    var out = std.ArrayList(Peer).empty;
 
-    for (peers) |peer| {
-        try hashmap.put(&peer.pubkey, peer.nickname);
-        try set.put(peer.nickname, {});
-
-        if (peer.addr != null and std.mem.order(u8, &identity.public_key, &peer.pubkey) == .gt)
-            try to_connect_al.append(alloc, peer);
+    for (peers) |p| {
+        if (p.addr != null and std.mem.order(u8, &ident.public_key, &p.pubkey) == .gt)
+            try out.append(alloc, p);
     }
 
-    return .{
-        .hashmap = hashmap,
-        .set = set,
-        .to_connect = try to_connect_al.toOwnedSlice(alloc),
-    };
+    return try out.toOwnedSlice(alloc);
 }
 
-pub fn init(io: Io, arena: *Arena, identity: Identity, config: Config) !Network {
-    const peers = try collectPeers(identity, config.peers, arena.allocator());
+pub fn getPeers(repo: *Repo) ![]const Peer {
+    _ = repo; // autofix
+}
 
-    var allocating = Io.Writer.Allocating.init(arena.allocator());
-    const writer = &allocating.writer;
-    try config.bind_addr.format(writer);
+pub fn init(io: Io, arena: *Arena, identity: Identity, repo: *Repo, config: Config) !Network {
+    const connectable = try getConnectable(identity, config.peers, arena.allocator());
 
-    const ip = try allocating.toOwnedSlice();
-    errdefer arena.allocator().free(ip);
+    {
+        var allocating = Io.Writer.Allocating.init(arena.allocator());
+        const writer = &allocating.writer;
+        try config.bind_addr.format(writer);
 
-    log.debug("Starting listener on {s}", .{ip});
+        const ip = try allocating.toOwnedSlice();
+        defer arena.allocator().free(ip);
+
+        log.debug("Starting listener on {s}", .{ip});
+    }
 
     const server = try config.bind_addr.listen(io, .{
         .reuse_address = true,
@@ -113,10 +113,9 @@ pub fn init(io: Io, arena: *Arena, identity: Identity, config: Config) !Network 
         .server = server,
         .tasks = .init,
         .start_task = undefined,
-        .nicks = peers.set,
-        .peers = peers.hashmap,
+        .connectable = connectable,
         .identity = identity,
-        .to_connect = peers.to_connect,
+        .repo = repo,
     };
 }
 
@@ -195,11 +194,12 @@ fn connectToPeer(self: *Network, peer: Peer) error{Canceled}!void {
             rdr,
             writer,
             self.identity,
-            &self.peers,
+
             &peer.pubkey,
             .{
                 .initiator = true,
             },
+            self.repo,
         ) catch |err| switch (err) {
             error.PeerDoesNotHoldPubkey => {
                 stream.close(self.io);
@@ -241,11 +241,11 @@ fn connectToPeer(self: *Network, peer: Peer) error{Canceled}!void {
 
 /// Starts the Network workers. Blocking. May be cancelled as required.
 pub fn start(self: *Network) void {
-    if (self.to_connect.len >= 1) {
-        log.debug("Sending outbound connection requests to {d} peers", .{self.to_connect.len});
+    if (self.connectable.len >= 1) {
+        log.debug("Sending outbound connection requests to {d} peers", .{self.connectable.len});
     }
 
-    for (self.to_connect) |connectable| {
+    for (self.connectable) |connectable| {
         self.tasks.concurrent(self.io, connectToPeer, .{ self, connectable }) catch unreachable;
     }
 
@@ -263,9 +263,6 @@ pub fn deinit(self: *Network) void {
 
 /// The peer has our pubkey already. Set in the configs out of band. So it should encrypt a message.
 fn handleConnectionRw(self: *Network, rdr: *Io.Reader, writer: *Io.Writer) !void {
-    const alloc = self.arena.allocator();
-    _ = alloc; // autofix
-
     // The peer connecting is initiator. Setup a noise session.
     var session = NoiseSession.init(
         self.io,
@@ -273,11 +270,11 @@ fn handleConnectionRw(self: *Network, rdr: *Io.Reader, writer: *Io.Writer) !void
         rdr,
         writer,
         self.identity,
-        &self.peers,
         null,
         .{
             .initiator = false,
         },
+        self.repo,
     ) catch |err| switch (err) {
         error.UnknownPeer, error.PeerDoesNotHoldPubkey => return,
         else => {
@@ -377,5 +374,5 @@ pub const Peer = struct {
     /// A (locally) unique ID for the peer.
     /// Globally unique IDs could be generated using a hash of one's own public
     /// key.
-    id: u8 = 0,
+    id: u64 = 0,
 };

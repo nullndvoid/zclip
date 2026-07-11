@@ -14,19 +14,23 @@
 //! Models for databases and possibly configs. Where these diverge,
 //! it shall be made clear.
 
+const sqlite = @import("sqlite");
+const Text = sqlite.Text;
+
 pub const NetworkPeer = struct {
     /// Peers public key. Base64 encoded. Decoded length should be 32 bytes.
-    pubkey: []const u8,
+    pubkey: Text,
 
     /// A nickname for the remote peer.
-    nickname: []const u8,
+    nickname: Text,
 
     /// The IP address of the remote peer. Null if the remote should only
     /// connect to this one.
-    addr: ?[]const u8,
+    addr: ?Text,
 
     /// A (locally) unique ID for the peer.
     /// Globally unique IDs could be generated using a hash of one's own public
-    /// key.
-    id: u8 = 0,
+    /// key. This might be friendlier than using nicknames, which aren't currently
+    /// guaranteed to be unique anyway.
+    id: u64 = 0,
 };

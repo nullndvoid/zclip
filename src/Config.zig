@@ -22,10 +22,9 @@ const Base64 = std.base64.standard;
 const known = @import("known-folders");
 const Serde = @import("serde");
 
-const Network = @import("Network.zig");
-
 const models = @import("models.zig");
 const Peer = models.NetworkPeer;
+const Network = @import("Network.zig");
 
 const BACKEND_ALLOC_LIMIT_DEFAULT = 1024 * 1024 * 512;
 const IS_DEBUG = @import("builtin").mode == .Debug;
@@ -149,33 +148,6 @@ pub fn get(cfg: Config) InnerConfig {
     return cfg.data;
 }
 
-/// Updates the inner config. Call `Config.get` for a copy of the internal data.
-/// Do not update `.data` directly, this is in case an update fails.
-///
-/// Since I am migrating 'live config' to SQLite, usage should be a code smell.
-fn update(cfg: *Config, new_config: InnerConfig) !void {
-    const bytes = try toSlice(new_config, cfg.alloc);
-
-    var atomic_file = try cfg.dir.createFileAtomic(
-        cfg.io,
-        cfg.path,
-        .{ .replace = true },
-    );
-    defer atomic_file.deinit(cfg.io);
-
-    var writer_buf: [1024]u8 = undefined;
-
-    var af_writer = atomic_file.file.writer(cfg.io, &writer_buf);
-    const writer = &af_writer.interface;
-
-    try writer.writeAll(bytes);
-    try writer.flush();
-
-    try atomic_file.replace(cfg.io);
-
-    cfg.data = new_config;
-}
-
 test "read config" {
     const io = std.testing.io;
     const alloc = std.testing.allocator;
@@ -211,44 +183,4 @@ test "read config" {
     const data = cfg.get();
 
     try std.testing.expectEqualStrings("./data", data.daemon.data_dir.?);
-}
-
-test Config {
-    const io = std.testing.io;
-    const alloc = std.testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(alloc);
-    defer arena.deinit();
-
-    // To avoid clobbering the example config on call to update.
-    const f = try Io.Dir.createFileAbsolute(io, "/tmp/zclip.toml", .{});
-    f.close(io);
-
-    defer Io.Dir.deleteFileAbsolute(io, "/tmp/zclip.toml") catch {};
-
-    {
-        var cfg = try Config.fromPath(io, arena.allocator(), "/tmp/zclip.toml");
-        defer cfg.deinit();
-
-        var cfg_data = cfg.get();
-
-        cfg_data.client.unix_socket_address = "/tmp/zclip.sock";
-
-        try cfg.update(cfg_data); // Updates the config with new data. Moving
-        //                           to SQLite means this should not be used.
-
-    }
-
-    // Now we could re-open cfg and assert same.
-    var tmp_dir = try Io.Dir.openDirAbsolute(io, "/tmp", .{});
-    defer tmp_dir.close(io);
-
-    var cfg = try Config.fromPathWithDir(io, tmp_dir, arena.allocator(), "zclip.toml", false);
-    defer cfg.deinit();
-
-    const cfg_data = cfg.get();
-
-    try std.testing.expectEqualStrings(
-        "/tmp/zclip.sock",
-        cfg_data.client.unix_socket_address.?,
-    );
 }
