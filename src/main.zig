@@ -19,7 +19,7 @@ const Cli = @import("Cli.zig");
 const Client = @import("Client.zig");
 const Config = @import("Config.zig");
 const Daemon = @import("Daemon.zig");
-const Log = @import("Log.zig");
+const Log = @import("log.zig");
 const Network = @import("Network.zig");
 
 const log = std.log.scoped(.zclip);
@@ -123,8 +123,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     try select.concurrent(.signal, waitForInterrupt, .{});
 
     const socket_path = cli_opts.socket_path orelse
-        cfg.daemon.unix_socket_address orelse
-        cfg.client.unix_socket_address orelse
+        cfg.unix_socket_address orelse
         try getSocketPath(arena.allocator(), minimal.environ);
 
     if (cli_opts.command == null) {
@@ -140,15 +139,10 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         inet_cfg.bind_addr = ip;
     }
 
-    if (cfg.daemon.peers) |peers| {
-        for (peers) |*peer| {
-            peer.fix(&arena) catch |err| {
-                log.err("Could not use configured peer \"{s}\". Reason: {t}", .{ peer.nickname, err });
-                log.info("To add a peer, try `zclip peer add nickname public_key`", .{});
-            };
-        }
-        inet_cfg.peers = peers;
-    }
+    // TODO: Fetch peers from DB. Config should be static for the most part.
+    // if (cfg.daemon.peers) |peers| {
+    //     inet_cfg.peers = peers;
+    // }
 
     if (cli_opts.bind_addr) |addr| {
         inet_cfg.bind_addr = addr.addr;
@@ -218,7 +212,6 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
                         _ = add; // autofix
                     },
                     .list => {
-                        // TODO: Everything not under Daemon should go over the UNIX socket.
                         const peers = try client.listPeers();
 
                         try printPeers(peers, gpa.allocator(), stdout_writer);
@@ -243,7 +236,7 @@ fn base64encode(bytes: []const u8, alloc: Allocator) ![]const u8 {
 
 fn printPeers(peers: []const Network.Peer, alloc: Allocator, writer: *Io.Writer) !void {
     for (peers) |p| {
-        const pubkey = try base64encode(p.pubkey, alloc);
+        const pubkey = try base64encode(&p.pubkey, alloc);
         defer alloc.free(pubkey);
 
         try writer.print("{s} ({s})\n", .{ p.nickname, pubkey });

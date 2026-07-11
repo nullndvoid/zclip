@@ -77,11 +77,10 @@ fn collectPeers(identity: Identity, peers: []const Peer, alloc: Allocator) !stru
     var to_connect_al = std.ArrayList(Peer).empty;
 
     for (peers) |peer| {
-        if (!peer.fixed) continue; // Skip broken peers.
-        try hashmap.put(peer.pubkey, peer.nickname);
+        try hashmap.put(&peer.pubkey, peer.nickname);
         try set.put(peer.nickname, {});
 
-        if (peer.addr != null and std.mem.order(u8, &identity.public_key, peer.pubkey) == .gt)
+        if (peer.addr != null and std.mem.order(u8, &identity.public_key, &peer.pubkey) == .gt)
             try to_connect_al.append(alloc, peer);
     }
 
@@ -197,7 +196,7 @@ fn connectToPeer(self: *Network, peer: Peer) error{Canceled}!void {
             writer,
             self.identity,
             &self.peers,
-            peer.pubkey,
+            &peer.pubkey,
             .{
                 .initiator = true,
             },
@@ -363,9 +362,10 @@ fn acceptConnections(self: *Network) void {
     }
 }
 
+/// Used internally.
 pub const Peer = struct {
-    /// Peers public key. Should be 32 bytes in length.
-    pubkey: []const u8,
+    /// Peers public key. This is decoded from Base64.
+    pubkey: [32]u8,
 
     /// A nickname for the remote peer.
     nickname: []const u8,
@@ -374,21 +374,8 @@ pub const Peer = struct {
     /// connect to this one.
     addr: ?[]const u8,
 
-    /// This can be left set if the config is broken for a peer.
-    fixed: bool = false,
-
-    pub fn fix(self: *Peer, arena: *Arena) !void {
-        if (self.fixed) return;
-
-        const len = try b64.Decoder.calcSizeForSlice(self.pubkey);
-        if (len != 32) return error.InvalidPubkeyLength;
-
-        const pubkey: []u8 = try arena.allocator().alloc(u8, len);
-        errdefer arena.allocator().free(pubkey);
-
-        try b64.Decoder.decode(pubkey, self.pubkey);
-
-        self.fixed = true;
-        self.pubkey = pubkey;
-    }
+    /// A (locally) unique ID for the peer.
+    /// Globally unique IDs could be generated using a hash of one's own public
+    /// key.
+    id: u8 = 0,
 };

@@ -24,6 +24,9 @@ const Serde = @import("serde");
 
 const Network = @import("Network.zig");
 
+const models = @import("models.zig");
+const Peer = models.NetworkPeer;
+
 const BACKEND_ALLOC_LIMIT_DEFAULT = 1024 * 1024 * 512;
 const IS_DEBUG = @import("builtin").mode == .Debug;
 
@@ -50,7 +53,8 @@ pub fn deinit(self: *Config) void {
 pub const InnerConfig = struct {
     debugging: DebuggingSection = .{},
     daemon: DaemonSection = .{},
-    client: ClientSection = .{},
+    /// The address to bind the UNIX socket to (or connect to).
+    unix_socket_address: ?[]const u8 = null,
 
     /// Optional memory limit for the process excluding I/O (futures). More useful for Debugging.
     const DebuggingSection = struct {
@@ -61,19 +65,8 @@ pub const InnerConfig = struct {
         /// The address to bind the daemon to.
         bind_address: ?[]const u8 = null,
 
-        /// The address to bind the UNIX socket to (or connect to).
-        unix_socket_address: ?[]const u8 = null,
-
         /// The directory storing data such as keyfiles.
         data_dir: ?[]const u8 = null,
-
-        /// A list of peers pubkeys, and their nicknames.
-        peers: ?[]Network.Peer = null,
-    };
-
-    const ClientSection = struct {
-        /// The address to bind the UNIX socket to (or connect to).
-        unix_socket_address: ?[]const u8 = null,
     };
 };
 
@@ -158,7 +151,9 @@ pub fn get(cfg: Config) InnerConfig {
 
 /// Updates the inner config. Call `Config.get` for a copy of the internal data.
 /// Do not update `.data` directly, this is in case an update fails.
-pub fn update(cfg: *Config, new_config: InnerConfig) !void {
+///
+/// Since I am migrating 'live config' to SQLite, usage should be a code smell.
+fn update(cfg: *Config, new_config: InnerConfig) !void {
     const bytes = try toSlice(new_config, cfg.alloc);
 
     var atomic_file = try cfg.dir.createFileAtomic(
@@ -187,7 +182,7 @@ test "read config" {
     var arena = std.heap.ArenaAllocator.init(alloc);
     defer arena.deinit();
 
-    const tmp_dir = std.testing.tmpDir(.{});
+    var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
     // Write the config to test/config.toml.
@@ -197,11 +192,6 @@ test "read config" {
             \\bind_address = "127.0.0.1:48501"
             \\unix_socket_address = "./data/zclip_bob.sock"
             \\data_dir = "./data"
-            \\
-            \\[[daemon.peers]]
-            \\nickname = "Alice"
-            \\pubkey = "4EIP8HSpq2hx2jhqVOPWXf5Ri0JTdzTa5iP6091VTDc="
-            \\addr = "127.0.0.1:48500"
         ;
 
         const file = try tmp_dir.dir.createFile(io, "config.toml", .{});
@@ -215,13 +205,12 @@ test "read config" {
         try writer.flush();
     }
 
-    const cfg = try Config.fromPathWithDir(io, tmp_dir.dir, arena.allocator(), "config.toml", false);
+    var cfg = try Config.fromPathWithDir(io, tmp_dir.dir, arena.allocator(), "config.toml", false);
     defer cfg.deinit();
 
     const data = cfg.get();
 
     try std.testing.expectEqualStrings("./data", data.daemon.data_dir.?);
-    try std.testing.expectEqualStrings("Alice", data.daemon.peers.?[0].nickname);
 }
 
 test Config {
@@ -242,13 +231,10 @@ test Config {
 
         var cfg_data = cfg.get();
 
-        const peers = cfg_data.daemon.peers;
-
-        _ = peers; // Do something with peers.
-
         cfg_data.client.unix_socket_address = "/tmp/zclip.sock";
 
-        try cfg.update(cfg_data); // Updates the config with new data.
+        try cfg.update(cfg_data); // Updates the config with new data. Moving
+        //                           to SQLite means this should not be used.
 
     }
 

@@ -74,29 +74,34 @@ pub fn deinit(self: *Client) void {
 
 /// Gets a list of `Peer`'s from the daemon.
 pub fn listPeers(self: *Client) ClientError![]const Network.Peer {
-    const reply = try self.sendCommand(.GetPeers) orelse return error.MissingResponse;
+    const reply = try self.sendCommand(.GetPeers);
 
     switch (reply) {
         .Peers => |peers| {
             return peers;
         },
-        else => return error.InvalidDaemonReply,
+        else => unreachable,
     }
 }
 
 // This is not base64 encoded. You should do this as needed.
 pub fn getPubkey(self: *Client) ClientError![32]u8 {
-    const reply = try self.sendCommand(.GetPubkey) orelse return error.MissingResponse;
+    const reply = try self.sendCommand(.GetPubkey);
 
     switch (reply) {
         .Pubkey => |pubkey| {
             return pubkey.pubkey;
         },
-        else => return error.InvalidDaemonReply,
+        else => unreachable,
     }
 }
 
-fn sendCommand(self: *Client, command: Command) !?Command {
+/// Adds a peer to the daemon, with given ID.
+pub fn addPeer(self: *Client, peer: Network.Peer) ClientError!void {
+    return try self.sendCommand(.PostPeer{peer});
+}
+
+fn sendCommand(self: *Client, command: Command) !Command {
     var read_buf: [4096]u8 = undefined;
     var write_buf: [4096]u8 = undefined;
 
@@ -114,16 +119,16 @@ const SelectTask = union(enum) {
     read: ClientError!Command,
 };
 
-fn sendCommandRw(self: *Client, rdr: *Io.Reader, writer: *Io.Writer, command: Command) ClientError!?Command {
+fn sendCommandRw(self: *Client, rdr: *Io.Reader, writer: *Io.Writer, command: Command) ClientError!Command {
     switch (command) {
-        .Clip, .Pubkey, .Peers => return error.ServerCommand,
+        .Clip, .Pubkey, .Peers, .Ok => return error.ServerCommand,
         else => {},
     }
 
-    const resp_tag: ?CommandType = switch (command) {
+    const resp_tag: CommandType = switch (command) {
         .GetPubkey => .Pubkey,
         .GetPeers => .Peers,
-        else => null,
+        else => .Ok,
     };
 
     UnixSocket.writeCommandFramed(writer, self.arena.allocator(), command) catch |err| {
@@ -132,12 +137,10 @@ fn sendCommandRw(self: *Client, rdr: *Io.Reader, writer: *Io.Writer, command: Co
         return error.WriteFailed;
     };
 
-    if (resp_tag == null) return null;
-
     var select_tasks: [2]SelectTask = undefined;
     var select = Io.Select(SelectTask).init(self.io, &select_tasks);
 
-    try select.concurrent(.read, readResponseHelper, .{ self, rdr, resp_tag.? });
+    try select.concurrent(.read, readResponseHelper, .{ self, rdr, resp_tag });
     try select.concurrent(.timer, Io.sleep, .{
         self.io,
         .fromMilliseconds(200),
@@ -182,6 +185,8 @@ fn readResponseHelper(self: *Client, rdr: *Io.Reader, expected_tag: CommandType)
 
     if (tag != expected_tag) {
         log.err("Got unexpected reply from daemon. Expected {s} but got {s}", .{ @tagName(expected_tag), @tagName(tag) });
+
+        return error.InvalidDaemonReply;
     }
 
     return reply;

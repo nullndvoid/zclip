@@ -47,6 +47,10 @@ pub const CommandType = enum {
     GetPeers,
     /// Daemon returns the peer list.
     Peers,
+    /// Client sends a new peer to add to the config.
+    PostPeer,
+    /// Generic response if the daemon processed what was sent.
+    Ok,
 };
 
 pub const Command = union(CommandType) {
@@ -57,6 +61,8 @@ pub const Command = union(CommandType) {
     InvalidCommand,
     GetPeers,
     Peers: []Network.Peer,
+    PostPeer: Network.Peer,
+    Ok,
 };
 
 clipboard: *zclip.Clipboard,
@@ -117,7 +123,7 @@ pub fn deinit(self: *UnixSocket) void {
 pub fn acceptConnections(self: *UnixSocket) void {
     var group = Io.Group.init;
 
-    defer group.cancel(self.io); // TODO: Send a Stop message and await instead.
+    defer group.cancel(self.io);
 
     while (true) {
         const stream = self.server.accept(self.io) catch |err| {
@@ -205,9 +211,10 @@ fn handleConnectionRw(self: *UnixSocket, rdr: *Io.Reader, writer: *Io.Writer) !v
                 },
             },
             .GetPeers => .{
-                .Peers = self.cfg.get().daemon.peers orelse &.{},
+                // TODO: Pull from DB.
+                .Peers = &.{},
             },
-            else => continue,
+            else => .Ok,
         };
 
         try writeCommandFramed(writer, arena.allocator(), reply);
