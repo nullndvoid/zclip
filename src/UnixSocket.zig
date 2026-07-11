@@ -51,6 +51,8 @@ pub const CommandType = enum {
     PostPeer,
     /// Generic response if the daemon processed what was sent.
     Ok,
+    /// Contains an error message for debugging.
+    DaemonError,
 };
 
 pub const Command = union(CommandType) {
@@ -63,6 +65,7 @@ pub const Command = union(CommandType) {
     Peers: []const Network.Peer,
     PostPeer: Network.Peer,
     Ok,
+    DaemonError: []const u8,
 };
 
 clipboard: *zclip.Clipboard,
@@ -211,10 +214,12 @@ fn handleConnectionRw(self: *UnixSocket, rdr: *Io.Reader, writer: *Io.Writer) !v
                 },
             },
             .GetPeers => blk: {
-                const peers = try self.repo.getPeers();
-                const cmd = Command{
-                    .Peers = peers,
+                var cmd: Command = undefined;
+                const peers = self.repo.getPeers() catch |err| {
+                    cmd = .{ .DaemonError = @errorName(err) };
+                    break :blk cmd;
                 };
+                cmd = .{ .Peers = peers };
 
                 break :blk cmd;
             },

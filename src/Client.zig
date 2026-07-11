@@ -20,10 +20,10 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 
 const serde = @import("serde");
 
+const Network = @import("Network.zig");
 const UnixSocket = @import("UnixSocket.zig");
 const Command = UnixSocket.Command;
 const CommandType = UnixSocket.CommandType;
-const Network = @import("Network.zig");
 
 const log = std.log.scoped(.Client);
 
@@ -38,6 +38,7 @@ pub const ClientError = error{
     ResponseTimedOut,
     MissingResponse,
     InvalidDaemonReply,
+    DaemonError,
 } || Io.ConcurrentError || Io.Cancelable;
 
 pub const Opts = struct {
@@ -121,7 +122,7 @@ const SelectTask = union(enum) {
 
 fn sendCommandRw(self: *Client, rdr: *Io.Reader, writer: *Io.Writer, command: Command) ClientError!Command {
     switch (command) {
-        .Clip, .Pubkey, .Peers, .Ok => return error.ServerCommand,
+        .Clip, .Pubkey, .Peers, .Ok, .DaemonError => return error.ServerCommand,
         else => {},
     }
 
@@ -174,7 +175,7 @@ fn sendCommandRw(self: *Client, rdr: *Io.Reader, writer: *Io.Writer, command: Co
     }
 }
 
-fn readResponseHelper(self: *Client, rdr: *Io.Reader, expected_tag: CommandType) !Command {
+fn readResponseHelper(self: *Client, rdr: *Io.Reader, expected_tag: CommandType) ClientError!Command {
     const reply = UnixSocket.readFramedCommand(rdr, self.arena.allocator(), .{}) catch |err| {
         log.err("Failed to read reply from daemon. Reason: {t}", .{err});
 
@@ -182,6 +183,15 @@ fn readResponseHelper(self: *Client, rdr: *Io.Reader, expected_tag: CommandType)
     };
 
     const tag = std.meta.activeTag(reply);
+
+    switch (reply) {
+        .DaemonError => |err| {
+            log.err("Daemon errored with message \"{s}\"", .{err});
+
+            return error.DaemonError;
+        },
+        else => {},
+    }
 
     if (tag != expected_tag) {
         log.err("Got unexpected reply from daemon. Expected {s} but got {s}", .{ @tagName(expected_tag), @tagName(tag) });
