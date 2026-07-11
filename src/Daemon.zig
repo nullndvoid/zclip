@@ -79,6 +79,7 @@ pub fn start(self: *Daemon) !void {
 
     const repo = try Repo.init(self.opts.data_dir, self.arena.allocator());
     self.repo = repo;
+    defer self.repo.deinit();
 
     var net = try Network.init(self.io, self.arena, self.identity, &self.repo, self.opts.inet);
     defer net.deinit();
