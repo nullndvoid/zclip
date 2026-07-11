@@ -34,7 +34,7 @@ const log = std.log.scoped(.net);
 pub const PeerMap = std.StringHashMap([]const u8);
 
 io: Io,
-arena: *Arena,
+alloc: Allocator,
 server: Io.net.Server,
 tasks: Io.Group,
 start_task: Io.Future(void),
@@ -85,16 +85,16 @@ pub fn getConnectable(ident: Identity, peers: []const Peer, alloc: Allocator) ![
     return try out.toOwnedSlice(alloc);
 }
 
-pub fn init(io: Io, arena: *Arena, identity: Identity, repo: *Repo, config: Config) !Network {
-    const connectable = try getConnectable(identity, config.peers, arena.allocator());
+pub fn init(io: Io, alloc: Allocator, identity: Identity, repo: *Repo, config: Config) !Network {
+    const connectable = try getConnectable(identity, config.peers, alloc);
 
     {
-        var allocating = Io.Writer.Allocating.init(arena.allocator());
+        var allocating = Io.Writer.Allocating.init(alloc);
         const writer = &allocating.writer;
         try config.bind_addr.format(writer);
 
         const ip = try allocating.toOwnedSlice();
-        defer arena.allocator().free(ip);
+        defer alloc.free(ip);
 
         log.debug("Starting listener on {s}", .{ip});
     }
@@ -105,7 +105,7 @@ pub fn init(io: Io, arena: *Arena, identity: Identity, repo: *Repo, config: Conf
 
     return .{
         .io = io,
-        .arena = arena,
+        .alloc = alloc,
         .server = server,
         .tasks = .init,
         .start_task = undefined,
@@ -186,7 +186,7 @@ fn connectToPeer(self: *Network, peer: Peer) error{Canceled}!void {
 
         var session = NoiseSession.init(
             self.io,
-            self.arena.allocator(),
+            self.alloc,
             rdr,
             writer,
             self.identity,
@@ -255,6 +255,7 @@ pub fn deinit(self: *Network) void {
     self.tasks.cancel(self.io);
     self.start_task.await(self.io);
     self.server.deinit(self.io);
+    self.alloc.free(self.connectable);
 }
 
 /// The peer has our pubkey already. Set in the configs out of band. So it should encrypt a message.
@@ -262,7 +263,7 @@ fn handleConnectionRw(self: *Network, rdr: *Io.Reader, writer: *Io.Writer) !void
     // The peer connecting is initiator. Setup a noise session.
     var session = NoiseSession.init(
         self.io,
-        self.arena.allocator(),
+        self.alloc,
         rdr,
         writer,
         self.identity,
@@ -288,7 +289,7 @@ fn handleConnectionRw(self: *Network, rdr: *Io.Reader, writer: *Io.Writer) !void
 
 fn processPackets(self: *Network, rdr: *Io.Reader, writer: *Io.Writer, session: *NoiseSession) !void {
     _ = writer; // autofix
-    const alloc = self.arena.allocator();
+    const alloc = self.alloc;
 
     while (true) {
         const packet = session.recvT(Packet, rdr, alloc) catch |err| {

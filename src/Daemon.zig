@@ -84,7 +84,7 @@ pub fn start(self: *Daemon) !void {
     self.repo = repo;
     defer self.repo.deinit();
 
-    var net = try Network.init(self.io, &arena, self.identity, &self.repo, self.opts.inet);
+    var net = try Network.init(self.io, self.alloc, self.identity, &self.repo, self.opts.inet);
     defer net.deinit();
 
     self.select_tasks = .init(self.io, &self.select_tasks_buf);
