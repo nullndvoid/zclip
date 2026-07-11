@@ -115,7 +115,7 @@ pub fn init(
     var pubkey_b64: []const u8 = if (peer_pubkey) |pubkey|
         try util.base64encode(pubkey, alloc)
     else
-        undefined;
+        ""; // On error, free of empty slice is a no-op.
     defer alloc.free(pubkey_b64);
 
     if (opts.initiator) {
