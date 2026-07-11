@@ -174,6 +174,8 @@ fn connectToPeer(self: *Network, peer: Peer) error{Canceled}!void {
 
     while (true) {
         const stream = try self.connectWithBackoff(addr, peer, &backoff);
+        var conn_arena = Arena.init(self.alloc);
+        defer conn_arena.deinit();
 
         var read_buf: [4096]u8 = undefined;
         var write_buf: [4096]u8 = undefined;
@@ -186,7 +188,7 @@ fn connectToPeer(self: *Network, peer: Peer) error{Canceled}!void {
 
         var session = NoiseSession.init(
             self.io,
-            self.alloc,
+            conn_arena.allocator(),
             rdr,
             writer,
             self.identity,
@@ -261,9 +263,12 @@ pub fn deinit(self: *Network) void {
 /// The peer has our pubkey already. Set in the configs out of band. So it should encrypt a message.
 fn handleConnectionRw(self: *Network, rdr: *Io.Reader, writer: *Io.Writer) !void {
     // The peer connecting is initiator. Setup a noise session.
+    var conn_arena = Arena.init(self.alloc);
+    defer conn_arena.deinit();
+
     var session = NoiseSession.init(
         self.io,
-        self.alloc,
+        conn_arena.allocator(),
         rdr,
         writer,
         self.identity,
@@ -289,10 +294,13 @@ fn handleConnectionRw(self: *Network, rdr: *Io.Reader, writer: *Io.Writer) !void
 
 fn processPackets(self: *Network, rdr: *Io.Reader, writer: *Io.Writer, session: *NoiseSession) !void {
     _ = writer; // autofix
-    const alloc = self.alloc;
+    var packet_arena = Arena.init(self.alloc);
+    defer packet_arena.deinit();
 
     while (true) {
-        const packet = session.recvT(Packet, rdr, alloc) catch |err| {
+        defer _ = packet_arena.reset(.retain_capacity);
+
+        const packet = session.recvT(Packet, rdr, packet_arena.allocator()) catch |err| {
             switch (err) {
                 error.EndOfStream => break,
                 else => {},
