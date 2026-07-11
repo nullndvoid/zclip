@@ -211,7 +211,22 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
 
                 switch (act) {
                     .add => |add| {
-                        _ = add; // autofix
+                        const pubkey = util.base64decode(add.pubkey, gpa.allocator()) catch {
+                            log.err("Public key should be base64 encoded!", .{});
+                            std.process.exit(1);
+                        };
+
+                        defer gpa.allocator().free(pubkey);
+                        if (pubkey.len != 32) {
+                            log.err("Public key should decode to 32 bytes! Got {d}", .{pubkey.len});
+                            std.process.exit(1);
+                        }
+
+                        try client.addPeer(.{
+                            .addr = add.addr,
+                            .pubkey = pubkey[0..32].*,
+                            .nickname = add.name,
+                        }, add.force);
                     },
                     .list => {
                         const peers = try client.listPeers();
@@ -230,8 +245,9 @@ fn printPeers(peers: []const Network.Peer, alloc: Allocator, writer: *Io.Writer)
     for (peers) |p| {
         const pubkey = try util.base64encode(&p.pubkey, alloc);
         defer alloc.free(pubkey);
-
-        try writer.print("{s} ({s})\n", .{ p.nickname, pubkey });
+        if (p.addr) |addr| {
+            try writer.print("ID {d}: {s} ({s}) {s}\n", .{ p.id, p.nickname, p.pubkey, addr });
+        } else try writer.print("ID {d}: {s} ({s})\n", .{ p.id, p.nickname, pubkey });
     }
 
     try writer.writeAll("\n");

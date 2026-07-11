@@ -17,6 +17,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const sqlite = @import("sqlite");
+const Text = sqlite.Text;
 
 pub const models = @import("models.zig");
 const Network = @import("Network.zig");
@@ -53,10 +54,46 @@ fn initSchema(db: sqlite.Database) !void {
         \\ addr VARCHAR,
         \\ pubkey VARCHAR NOT NULL);
     , .{});
+
+    try db.exec(
+        \\ CREATE UNIQUE INDEX IF NOT EXISTS peers_pubkey_idx ON peers (pubkey);
+    , .{});
 }
 
 pub fn deinit(repo: *Repo) void {
     repo.db.close();
+}
+
+pub fn addPeer(
+    repo: *Repo,
+    peer: struct { nickname: []const u8, addr: ?[]const u8, pubkey: []const u8 },
+    force: bool,
+) !void {
+    const sql = if (force)
+        \\INSERT INTO peers (nickname, addr, pubkey) VALUES (:nickname, :addr, :pubkey)
+        \\ON CONFLICT (pubkey) DO UPDATE SET nickname = excluded.nickname, addr = excluded.addr;
+    else
+        \\INSERT INTO peers (nickname, addr, pubkey) VALUES (:nickname, :addr, :pubkey);
+        ;
+
+    const stmt = try repo.db.prepare(
+        struct { nickname: Text, addr: ?Text, pubkey: Text },
+        void,
+        sql,
+    );
+    defer stmt.finalize();
+    defer stmt.reset();
+
+    try stmt.bind(.{
+        .addr = if (peer.addr) |addr| .{ .data = addr } else null,
+        .nickname = .{ .data = peer.nickname },
+        .pubkey = .{ .data = peer.pubkey },
+    });
+
+    _ = stmt.step() catch |err| switch (err) {
+        error.SQLITE_CONSTRAINT => return error.PeerExists,
+        else => return err,
+    };
 }
 
 pub fn getPeerById(repo: *Repo, id: u64) !Network.Peer {

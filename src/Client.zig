@@ -97,9 +97,9 @@ pub fn getPubkey(self: *Client) ClientError![32]u8 {
     }
 }
 
-/// Adds a peer to the daemon, with given ID.
-pub fn addPeer(self: *Client, peer: Network.Peer) ClientError!void {
-    return try self.sendCommand(.PostPeer{peer});
+/// Adds a peer to the daemon, with given ID. `force` overwrites if already exists.
+pub fn addPeer(self: *Client, peer: Network.Peer, force: bool) ClientError!void {
+    _ = try self.sendCommand(.{ .PostPeer = .{ .peer = peer, .force = force } });
 }
 
 fn sendCommand(self: *Client, command: Command) !Command {

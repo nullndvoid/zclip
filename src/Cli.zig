@@ -21,15 +21,13 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const build_options = @import("options");
 const zclip = @import("zclip");
 
+const Help = @import("cli/Help.zig");
+pub const HelpOpts = Help.Opts;
 pub const Parse = @import("cli/parse.zig");
 pub const ParseCtx = Parse.ParseCtx;
 pub const ValueCtx = Parse.ValueCtx;
 pub const Diagnostics = Parse.Diagnostics;
 pub const ParseError = Parse.ParseError;
-
-const Help = @import("cli/Help.zig");
-pub const HelpOpts = Help.Opts;
-
 const Validate = @import("cli/Validate.zig");
 const Network = @import("Network.zig");
 
@@ -59,12 +57,18 @@ pub const PeerOpts = struct {
         pub const PeerAdd = struct {
             name: []const u8,
             pubkey: []const u8,
+            addr: ?[]const u8,
 
             force: bool = false,
 
             pub const positionals = .{
                 .name,
                 .pubkey,
+                .addr,
+            };
+
+            pub const help = .{
+                .usage = "peer add nickname publickey (optional IP address)",
             };
         };
     },

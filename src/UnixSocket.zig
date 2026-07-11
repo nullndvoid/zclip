@@ -23,6 +23,7 @@ const zclip = @import("zclip");
 
 const Network = @import("Network.zig");
 const Repo = @import("Repo.zig");
+const util = @import("util.zig");
 
 const log = std.log.scoped(.UNIX);
 
@@ -55,6 +56,8 @@ pub const CommandType = enum {
     DaemonError,
 };
 
+pub const PostPeerPayload = struct { peer: Network.Peer, force: bool };
+
 pub const Command = union(CommandType) {
     PostClip: zclip.Clip,
     Clip: zclip.Clip,
@@ -63,7 +66,7 @@ pub const Command = union(CommandType) {
     InvalidCommand,
     GetPeers,
     Peers: []const Network.Peer,
-    PostPeer: Network.Peer,
+    PostPeer: PostPeerPayload,
     Ok,
     DaemonError: []const u8,
 };
@@ -205,8 +208,6 @@ fn handleConnectionRw(self: *UnixSocket, rdr: *Io.Reader, writer: *Io.Writer) !v
             },
         };
 
-        log.debug("Got command {any}", .{command});
-
         const reply: Command = switch (command) {
             .GetPubkey => .{
                 .Pubkey = .{
@@ -220,6 +221,33 @@ fn handleConnectionRw(self: *UnixSocket, rdr: *Io.Reader, writer: *Io.Writer) !v
                     break :blk cmd;
                 };
                 cmd = .{ .Peers = peers };
+
+                break :blk cmd;
+            },
+            .PostPeer => |p| blk: {
+                const peer = p.peer;
+                const force = p.force;
+
+                var cmd: Command = undefined;
+
+                // The DB stores pubkeys base64 encoded.
+                const pubkey_b64 = util.base64encode(&peer.pubkey, arena.allocator()) catch |err| {
+                    cmd = .{ .DaemonError = @errorName(err) };
+
+                    break :blk cmd;
+                };
+
+                self.repo.addPeer(.{
+                    .addr = peer.addr,
+                    .nickname = peer.nickname,
+                    .pubkey = pubkey_b64,
+                }, force) catch |err| {
+                    cmd = .{ .DaemonError = @errorName(err) };
+
+                    break :blk cmd;
+                };
+
+                cmd = .Ok;
 
                 break :blk cmd;
             },
