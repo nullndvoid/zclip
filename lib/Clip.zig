@@ -11,7 +11,8 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 // GNU General Public License for more details.
 
-//! A clipboard entry and associated data.
+//! A clipboard entry and associated data. Data and MIME Type are heap alloced.
+//! Ownership follows the holder.
 
 const std = @import("std");
 

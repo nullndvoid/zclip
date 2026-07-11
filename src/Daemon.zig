@@ -74,7 +74,7 @@ pub fn start(self: *Daemon) !void {
 
     self.clipboard = try zclip.Clipboard.init(
         self.io,
-        &arena,
+        arena.allocator(),
         self.opts.clipboard,
     );
 

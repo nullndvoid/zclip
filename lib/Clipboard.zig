@@ -31,6 +31,10 @@ clips: std.ArrayList(Clip),
 commands_in: *CommandQueue,
 /// The worker thread.
 worker: Io.Future(anyerror!void),
+/// Used for initialisation of fields.
+init_arena: ArenaAllocator,
+/// Underlying allocator.
+alloc: Allocator,
 io: Io,
 /// Clipboard callback. Users could also inspect the arraylist but this
 /// provides a way to be notified immediately.
@@ -69,18 +73,18 @@ pub fn setOnClip(self: *Clipboard, comptime T: type, comptime callback: fn (clip
 }
 
 /// Adds clips to the array list and calls the callback.
-fn addClips(self: *Clipboard, allocator: Allocator, clips: []Clip) anyerror!void {
+fn addClips(self: *Clipboard, clips: []Clip) void {
     for (clips) |clip| {
-        const clip_data = try allocator.dupe(u8, clip.data);
-        const mime_type = try allocator.dupeSentinel(u8, clip.mime_type, 0);
-        errdefer {
-            allocator.free(clip_data);
-            allocator.free(mime_type);
+        if (self.clips.items.len == self.clips.capacity) {
+            // TODO: Use a linked list perhaps?
+            const removed = self.clips.orderedRemove(0);
+            self.alloc.free(removed.data);
+            self.alloc.free(removed.mime_type);
         }
 
-        try self.clips.append(allocator, .{
-            .data = clip_data,
-            .mime_type = mime_type,
+        self.clips.appendAssumeCapacity(.{
+            .data = clip.data,
+            .mime_type = clip.mime_type,
             .is_text = clip.is_text,
         });
 
@@ -158,9 +162,7 @@ fn workerFn(self: *Clipboard, ctx: *WorkerContext) anyerror!void {
                     },
                 };
 
-                addClips(self, ctx.alloc, clip_queue_buf[0..clips_read]) catch |err| {
-                    log.err("addClips failed with error {t}", .{err});
-                };
+                addClips(self, clip_queue_buf[0..clips_read]);
 
                 try select.concurrent(.clips, Io.Queue(Clip).get, .{ &ctx.clip_queue.queue, ctx.io, clip_queue_buf, 1 });
             },
@@ -168,42 +170,53 @@ fn workerFn(self: *Clipboard, ctx: *WorkerContext) anyerror!void {
     }
 }
 
-pub fn init(io: Io, arena: *ArenaAllocator, config: Config) !*Clipboard {
-    const read_clip_queue = try arena.allocator().create(ClipQueue);
+pub fn init(io: Io, alloc: Allocator, config: Config) !*Clipboard {
+    const self = try alloc.create(Clipboard);
+    errdefer alloc.destroy(self);
+
+    self.init_arena = ArenaAllocator.init(alloc);
+    errdefer self.init_arena.deinit();
+
+    const read_clip_queue = try self.init_arena.allocator().create(ClipQueue);
     read_clip_queue.* = try zclip.ClipQueue.init(
         io,
-        arena.allocator(),
+        self.init_arena.allocator(),
         .{ .buffer_size = 5 },
     );
 
-    const backend = try Backend.init(io, arena, read_clip_queue);
+    const backend = try Backend.init(
+        io,
+        &self.init_arena,
+        read_clip_queue,
+    );
 
-    const commands_in_buf = try arena.allocator().alloc(
+    const commands_in_buf = try self.init_arena.allocator().alloc(
         Command,
         config.commands_in_buf_size,
     );
 
-    const commands_in = try arena.allocator().create(CommandQueue);
+    const commands_in = try self.init_arena.allocator().create(CommandQueue);
 
     commands_in.* = CommandQueue.init(commands_in_buf);
 
-    const self = try arena.allocator().create(Clipboard);
-    self.* = .{
-        .io = io,
-        .backend = backend,
-        .commands_in = commands_in,
-        .worker = undefined,
-        .clips = std.ArrayList(Clip).empty,
-        .on_clipboard = null,
-        .userdata = null,
-    };
+    self.alloc = alloc;
+    self.io = io;
+    self.backend = backend;
+    self.commands_in = commands_in;
+    self.worker = undefined;
+    self.clips = try std.ArrayList(Clip).initCapacity(
+        self.alloc,
+        config.clips_buf_size_max,
+    );
+    self.on_clipboard = null;
+    self.userdata = null;
 
-    const worker_ctx = try arena.allocator().create(WorkerContext);
+    const worker_ctx = try self.init_arena.allocator().create(WorkerContext);
     worker_ctx.* = .{
         .in = commands_in,
         .clip_queue = read_clip_queue,
         .io = io,
-        .alloc = arena.allocator(),
+        .alloc = self.init_arena.allocator(),
         .backend = backend,
     };
 
@@ -240,4 +253,6 @@ pub const Config = struct {
     /// Writes should not take long but just as a guess I will say 5.
     /// Wants tuning later.
     pending_writes_buf_size: usize = 5,
+    /// A bounded number of clips to hold before removing oldest entries.
+    clips_buf_size_max: usize = 100,
 };
