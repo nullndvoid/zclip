@@ -49,23 +49,38 @@ event_loop_future: ?std.Io.Future(void) = null,
 
 /// Passed into `DataControlDevice` listeners.
 const ListenerContext = struct {
-    /// Used for clip payloads (`Clip.data`/`Clip.mime_type`) pushed into
-    /// `clip_queue`. Ownership transfers to the consumer, which frees them
-    /// with this same allocator, so this must NOT be an arena.
+    /// A real (non-arena) allocator. Clip payloads pushed into `clip_queue`
+    /// (ownership transfers to the consumer) and our pending write copy in
+    /// `clip_to_write` are allocated from it.
     clip_alloc: Allocator,
     io: Io,
     /// Needed so the listener can flush queued requests (e.g. `receive`) to
     /// the compositor mid-callback, before we block reading the pipe.
     display: *Display,
     current_mime: Mime,
-    /// Nulled on `.cancelled` event.
+    /// Guards `clip_to_write` and `current_source`: `setClipboard` runs on
+    /// the clipboard worker while the data source listener runs on the
+    /// event loop task.
+    write_lock: Io.Mutex = .init,
+    /// Our copy of the pending write, served on every `.send`. Freed on
+    /// replacement, on `.cancelled` and on deinit.
     clip_to_write: ?Clip,
-    /// Destroyed after we wrote to the clipboard.
+    /// The source registered as the current selection. Destroyed on
+    /// `.cancelled`.
     current_source: ?DataControlSource = null,
     /// Cleaned up on deinit. A group of pending and completed reads.
     pending_reads: Io.Group,
     /// Passed in from `Clipboard`. Written to when the system sees new entries.
     clip_queue: *ClipQueue,
+
+    /// Caller must hold `write_lock`.
+    fn freeClipToWriteLocked(self: *ListenerContext) void {
+        if (self.clip_to_write) |clip| {
+            self.clip_alloc.free(clip.data);
+            self.clip_alloc.free(clip.mime_type);
+        }
+        self.clip_to_write = null;
+    }
 };
 
 /// This backend is heap allocated so the event loop thread works. You are responsible for calling `deinit`
@@ -135,19 +150,24 @@ pub fn init(io: Io, arena: *std.heap.ArenaAllocator, clip_alloc: Allocator, clip
     return self;
 }
 
+/// Creates a data source offering the clip's MIME type. The caller
+/// registers it as the selection.
+///
 /// TODO: Handle offering a range of MIME types, maybe make `Clip.mime_type` a list?
-///       Or handle this elsewhere using `listener_ctx.current_source`.
-fn createDataOffer(self: *Wayland, clip: Clip) !void {
+fn createDataOffer(self: *Wayland, clip: Clip) !DataControlSource {
     const source = try self.dcm.createDataSource();
+    errdefer source.destroy();
 
-    const mime_type = try self.arena.allocator().dupeSentinel(u8, clip.mime_type, 0);
-    errdefer self.arena.allocator().free(mime_type);
+    // libwayland copies request arguments during marshalling, so this
+    // sentinel-terminated copy only needs to live for the `offer` call.
+    const mime_type = try self.listener_ctx.clip_alloc.dupeSentinel(u8, clip.mime_type, 0);
+    defer self.listener_ctx.clip_alloc.free(mime_type);
 
     source.offer(mime_type);
     // To avoid reading back our own entries later on and deadlocking.
     source.offer(Mime.self_marker);
 
-    self.listener_ctx.current_source = source;
+    return source;
 }
 
 /// TODO: If an input MIME type is specific but not text, offer it multiple times as
@@ -155,18 +175,40 @@ fn createDataOffer(self: *Wayland, clip: Clip) !void {
 ///
 ///       This could mean building a list of MIME types to offer for a given input.
 pub fn setClipboard(self: *Wayland, clip: Clip) !void {
-    const clip_data = try self.arena.allocator().dupe(u8, clip.data);
-    const clip_copy = Clip{
-        .data = clip_data,
-        .is_text = clip.is_text,
-        .mime_type = clip.mime_type,
-    };
+    const ctx = self.listener_ctx;
 
-    try self.createDataOffer(clip);
-    if (self.listener_ctx.current_source) |src| {
-        self.dev.setSelection(src);
-        self.listener_ctx.clip_to_write = clip_copy;
-        src.send(self.listener_ctx);
+    // Copied because the compositor requests the data via `.send` events
+    // for as long as we own the selection, long after this call returns.
+    // Once ownership is handed to `clip_to_write` a later failure (flush)
+    // must not free the copies: the selection request is already queued.
+    var handed_off = false;
+    const clip_data = try ctx.clip_alloc.dupe(u8, clip.data);
+    errdefer if (!handed_off) ctx.clip_alloc.free(clip_data);
+    const mime_type = try ctx.clip_alloc.dupe(u8, clip.mime_type);
+    errdefer if (!handed_off) ctx.clip_alloc.free(mime_type);
+
+    {
+        ctx.write_lock.lockUncancelable(ctx.io);
+        defer ctx.write_lock.unlock(ctx.io);
+
+        const source = try self.createDataOffer(clip);
+
+        // The previous write can no longer be requested once the new
+        // source is the selection; its source is destroyed when the
+        // compositor cancels it.
+        ctx.freeClipToWriteLocked();
+        ctx.clip_to_write = .{
+            .data = clip_data,
+            .is_text = clip.is_text,
+            .mime_type = mime_type,
+        };
+        handed_off = true;
+        ctx.current_source = source;
+
+        // Listen for `.send` before the selection request can reach the
+        // compositor.
+        source.send(ctx);
+        self.dev.setSelection(source);
     }
 
     const flush_res = self.display.flush();
@@ -188,6 +230,10 @@ pub fn deinit(self: *Wayland) void {
     if (self.listener_ctx.current_source) |*src| {
         src.destroy();
     }
+
+    self.listener_ctx.write_lock.lockUncancelable(self.listener_ctx.io);
+    self.listener_ctx.freeClipToWriteLocked();
+    self.listener_ctx.write_lock.unlock(self.listener_ctx.io);
 
     self.listener_ctx.clip_queue.deinit(self.arena.allocator());
 
@@ -297,22 +343,24 @@ const Ext = struct {
     pub const Source = wayland.ext.DataControlSourceV1;
     pub const Offer = wayland.ext.DataControlOfferV1;
 
-    fn dataSourceListener(_: *Source, ev: Source.Event, ctx: *ListenerContext) void {
+    fn dataSourceListener(source: *Source, ev: Source.Event, ctx: *ListenerContext) void {
         switch (ev) {
             .send => |snd| {
-                if (ctx.clip_to_write == null) {
-                    log.err("Tried to send clip but it was null!", .{});
-                    return;
-                }
-
-                const clip = ctx.clip_to_write.?;
-
-                const write_fd = snd.fd;
                 const write_file = std.Io.File{
-                    .handle = write_fd,
+                    .handle = snd.fd,
                     .flags = .{ .nonblocking = false },
                 };
                 defer write_file.close(ctx.io);
+
+                // Held for the whole write so a concurrent `setClipboard`
+                // cannot free the data from under us.
+                ctx.write_lock.lockUncancelable(ctx.io);
+                defer ctx.write_lock.unlock(ctx.io);
+
+                const clip = ctx.clip_to_write orelse {
+                    log.err("Tried to send clip but it was null!", .{});
+                    return;
+                };
 
                 write_file.writeStreamingAll(ctx.io, clip.data) catch |err| {
                     log.err(
@@ -324,10 +372,23 @@ const Ext = struct {
                 };
             },
             .cancelled => {
-                if (ctx.current_source) |src| {
-                    src.destroy();
+                ctx.write_lock.lockUncancelable(ctx.io);
+                defer ctx.write_lock.unlock(ctx.io);
+
+                // A cancelled source is never asked to send again, so it is
+                // destroyed either way. It may be a source we already
+                // replaced though, in which case the current selection's
+                // state must be left alone.
+                const is_current = if (ctx.current_source) |cur| switch (cur) {
+                    .Ext => |src| src == source,
+                } else false;
+
+                source.destroy();
+
+                if (is_current) {
+                    ctx.current_source = null;
+                    ctx.freeClipToWriteLocked();
                 }
-                ctx.current_source = null;
             },
         }
     }
@@ -635,6 +696,22 @@ test "write clipboard -- wl-clipboard" {
     const clip = try readClipboardWlPaste(io, arena.allocator());
 
     try std.testing.expectEqualSlices(u8, clip_data, clip.data);
+
+    // Write again: replaces the pending copy and cancels the first source.
+    const clip_data2 = "Some different text";
+    try backend.setClipboard(
+        .{
+            .data = clip_data2,
+            .is_text = true,
+            .mime_type = "text/plain;charset=utf-8",
+        },
+    );
+
+    try io.sleep(.fromMilliseconds(10), .real);
+
+    const clip2 = try readClipboardWlPaste(io, arena.allocator());
+
+    try std.testing.expectEqualSlices(u8, clip_data2, clip2.data);
 
     // The backend may have picked up a stale selection on init; free any
     // queued payloads since they are owned by us, not the arena.
