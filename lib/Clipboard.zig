@@ -27,6 +27,9 @@ const log = std.log.scoped(.Clipboard);
 
 backend: *Backend,
 clips: std.ArrayList(Clip),
+/// Filled by the backend with clips whose payloads we own; drained by the
+/// worker task.
+clip_queue: *ClipQueue,
 /// Used to send commands to the worker task.
 commands_in: *CommandQueue,
 /// The worker thread.
@@ -184,9 +187,12 @@ pub fn init(io: Io, alloc: Allocator, config: Config) !*Clipboard {
         .{ .buffer_size = 5 },
     );
 
+    // The backend allocates clip payloads with our underlying allocator
+    // (not the arena) because we take ownership of them in addClips.
     const backend = try Backend.init(
         io,
         &self.init_arena,
+        alloc,
         read_clip_queue,
     );
 
@@ -202,6 +208,7 @@ pub fn init(io: Io, alloc: Allocator, config: Config) !*Clipboard {
     self.alloc = alloc;
     self.io = io;
     self.backend = backend;
+    self.clip_queue = read_clip_queue;
     self.commands_in = commands_in;
     self.worker = undefined;
     self.clips = try std.ArrayList(Clip).initCapacity(
@@ -225,7 +232,7 @@ pub fn init(io: Io, alloc: Allocator, config: Config) !*Clipboard {
     return self;
 }
 
-/// Stops the running backend and worker thread.
+/// Stops the running backend and worker thread, then frees all owned memory.
 pub fn deinit(self: *Clipboard) void {
     self.commands_in.putOneUncancelable(self.io, .Stop) catch {
         log.err("Worker task commands in queue closed. Cancelling tasks.", .{});
@@ -238,7 +245,32 @@ pub fn deinit(self: *Clipboard) void {
         log.err("Worker task died with error: {t}", .{err});
     };
 
+    // Free undelivered clip payloads: closing the queue makes in-flight
+    // backend reads bail out and free their own allocations, and anything
+    // already queued is ours to free.
+    self.clip_queue.close();
+    var drain_buf: [1]Clip = undefined;
+    while (true) {
+        const nclips = self.clip_queue.queue.get(self.io, &drain_buf, 1) catch break;
+        for (drain_buf[0..nclips]) |clip| {
+            self.alloc.free(clip.data);
+            self.alloc.free(clip.mime_type);
+        }
+    }
+
+    // The backend allocates from init_arena, so it must be deinited before
+    // the arena is.
     self.backend.deinit();
+
+    for (self.clips.items) |clip| {
+        self.alloc.free(clip.data);
+        self.alloc.free(clip.mime_type);
+    }
+    self.clips.deinit(self.alloc);
+
+    self.init_arena.deinit();
+
+    self.alloc.destroy(self);
 }
 
 /// Intended for use by unit tests etc. Blocking.

@@ -49,10 +49,10 @@ event_loop_future: ?std.Io.Future(void) = null,
 
 /// Passed into `DataControlDevice` listeners.
 const ListenerContext = struct {
-    /// This is actually wrapped in an `ArenaAllocator` in `init`.
-    /// i.e. there's no need to free anything we allocate in the
-    /// listener.
-    alloc: Allocator,
+    /// Used for clip payloads (`Clip.data`/`Clip.mime_type`) pushed into
+    /// `clip_queue`. Ownership transfers to the consumer, which frees them
+    /// with this same allocator, so this must NOT be an arena.
+    clip_alloc: Allocator,
     io: Io,
     /// Needed so the listener can flush queued requests (e.g. `receive`) to
     /// the compositor mid-callback, before we block reading the pipe.
@@ -70,7 +70,10 @@ const ListenerContext = struct {
 
 /// This backend is heap allocated so the event loop thread works. You are responsible for calling `deinit`
 /// on this (before you deinit the arena).
-pub fn init(io: Io, arena: *std.heap.ArenaAllocator, clip_queue: *ClipQueue) !*Wayland {
+///
+/// `clip_alloc` allocates the clip payloads handed over via `clip_queue`;
+/// whoever consumes the queue owns and frees them.
+pub fn init(io: Io, arena: *std.heap.ArenaAllocator, clip_alloc: Allocator, clip_queue: *ClipQueue) !*Wayland {
     const display = try Display.connect(null);
     var reg = try display.getRegistry();
     var globals = Globals{};
@@ -95,7 +98,7 @@ pub fn init(io: Io, arena: *std.heap.ArenaAllocator, clip_queue: *ClipQueue) !*W
     const listener_ctx = try arena.allocator().create(ListenerContext);
 
     listener_ctx.* = .{
-        .alloc = arena.allocator(),
+        .clip_alloc = clip_alloc,
         .io = io,
         .display = display,
         // TODO: Make this queue size configurable. i.e. pass a WaylandConfig struct.
@@ -369,14 +372,6 @@ const Ext = struct {
                 if (userdata.current_mime.from_zclip) return;
 
                 const ask_for = userdata.current_mime.choose() orelse "text/plain;charset=utf-8";
-                const ask_for_copy = userdata.alloc.dupeSentinel(u8, ask_for, 0) catch {
-                    log.err(
-                        "could not dupe current_mime in selection listener. Returning!",
-                        .{},
-                    );
-
-                    return;
-                };
                 const is_text = Mime.isPlainText(ask_for);
 
                 var fds: [2]i32 = @splat(0);
@@ -395,15 +390,28 @@ const Ext = struct {
                 if (flush_ret != .SUCCESS) {
                     log.err("Ext.listener failed to flush receive request: {t}. Some data may be lost.", .{flush_ret});
                     _ = std.c.close(write_fd);
+                    _ = std.c.close(read_fd);
                     return;
                 }
 
                 _ = std.c.close(write_fd);
 
+                // Becomes the queued clip's mime_type; the queue consumer
+                // owns and frees it.
+                const mime_copy = userdata.clip_alloc.dupe(u8, ask_for) catch {
+                    log.err(
+                        "could not dupe current_mime in selection listener. Returning!",
+                        .{},
+                    );
+
+                    _ = std.c.close(read_fd);
+                    return;
+                };
+
                 userdata.pending_reads.concurrent(
                     userdata.io,
                     readClip,
-                    .{ read_fd, userdata, ask_for_copy, is_text },
+                    .{ read_fd, userdata, mime_copy, is_text },
                 ) catch unreachable;
             },
             // For now we ignore these.
@@ -415,31 +423,34 @@ const Ext = struct {
         }
     }
 
-    fn readClip(read_fd: i32, userdata: *ListenerContext, ask_for: [:0]const u8, is_text: bool) void {
+    fn readClip(read_fd: i32, userdata: *ListenerContext, mime_type: []const u8, is_text: bool) void {
         var reader_buf: [pipe_buf_size]u8 = undefined;
 
         const file = std.Io.File{
             .handle = read_fd,
             .flags = .{ .nonblocking = false },
         };
-        errdefer file.close(userdata.io);
+        defer file.close(userdata.io);
 
         // Now read the contents until EOF.
         var file_rdr = file.readerStreaming(userdata.io, &reader_buf);
         const rdr = &file_rdr.interface;
 
-        const data = rdr.allocRemaining(userdata.alloc, .unlimited) catch |err| {
+        const data = rdr.allocRemaining(userdata.clip_alloc, .unlimited) catch |err| {
             log.err("Ext.listener: couldn't allocate memory for clipboard contents. {t}. Some data may be lost.", .{err});
+            userdata.clip_alloc.free(mime_type);
             return;
         };
 
         userdata.clip_queue.queue.putOneUncancelable(userdata.io, .{
             .data = data,
-            .mime_type = ask_for,
+            .mime_type = mime_type,
             .is_text = is_text,
         }) catch |err| switch (err) {
             error.Closed => {
                 log.info("Clip queue was closed. Some data will be lost.", .{});
+                userdata.clip_alloc.free(data);
+                userdata.clip_alloc.free(mime_type);
             },
         };
     }
@@ -571,7 +582,7 @@ test "read clipboard -- wl-clipboard" {
     var clip_queue = try ClipQueue.init(io, arena.allocator(), .{});
     defer clip_queue.deinit(arena.allocator());
 
-    var backend = try Wayland.init(io, &arena, &clip_queue);
+    var backend = try Wayland.init(io, &arena, alloc, &clip_queue);
     defer backend.deinit();
 
     const clip_data = "This is some text";
@@ -590,6 +601,10 @@ test "read clipboard -- wl-clipboard" {
     // so we take the tail of the queue.
     var clips: [2]Clip = undefined;
     const nclips = try clip_queue.queue.get(io, &clips, 1);
+    defer for (clips[0..nclips]) |clip| {
+        alloc.free(clip.data);
+        alloc.free(clip.mime_type);
+    };
 
     try std.testing.expectEqualSlices(u8, clip_data, clips[nclips - 1].data);
 }
@@ -603,7 +618,7 @@ test "write clipboard -- wl-clipboard" {
     var clip_queue = try ClipQueue.init(io, arena.allocator(), .{});
     defer clip_queue.deinit(arena.allocator());
 
-    var backend = try Wayland.init(io, &arena, &clip_queue);
+    var backend = try Wayland.init(io, &arena, alloc, &clip_queue);
     defer backend.deinit();
 
     const clip_data = "This is some text";
@@ -620,4 +635,14 @@ test "write clipboard -- wl-clipboard" {
     const clip = try readClipboardWlPaste(io, arena.allocator());
 
     try std.testing.expectEqualSlices(u8, clip_data, clip.data);
+
+    // The backend may have picked up a stale selection on init; free any
+    // queued payloads since they are owned by us, not the arena.
+    clip_queue.close();
+    var stale_clips: [2]Clip = undefined;
+    const nstale = clip_queue.queue.get(io, &stale_clips, 1) catch 0;
+    for (stale_clips[0..nstale]) |stale| {
+        alloc.free(stale.data);
+        alloc.free(stale.mime_type);
+    }
 }

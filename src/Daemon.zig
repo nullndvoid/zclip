@@ -14,7 +14,6 @@
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
-const ArenaAllocator = std.heap.ArenaAllocator;
 
 const zclip = @import("zclip");
 
@@ -69,12 +68,11 @@ fn clipCallback(clip: *zclip.Clip, _: *void) anyerror!void {
 
 /// Starts the daemon worker, blocking. May be cancelled by a signal. See signal handling in `main.zig`.
 pub fn start(self: *Daemon) !void {
-    var arena = ArenaAllocator.init(self.alloc);
-    defer arena.deinit();
-
+    // The clipboard outlives this function (it is torn down in `deinit`),
+    // so it must not be backed by a stack-local arena.
     self.clipboard = try zclip.Clipboard.init(
         self.io,
-        arena.allocator(),
+        self.alloc,
         self.opts.clipboard,
     );
 

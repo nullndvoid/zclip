@@ -16,8 +16,9 @@
 
 const std = @import("std");
 
-/// Owned by the backend, which will be owned by the `Manager`. Should be
-/// cleaned up on deinit.
+/// Allocated by the producing backend; ownership transfers with the clip,
+/// so whoever consumes it frees it (with the same allocator the backend
+/// was given for payloads).
 data: []const u8,
 /// Assumed to be correct. If we are reading from system clipboard, this is assumed valid.
 /// For writes, we perform no checks on the validity of the (data, mimetype) pair.

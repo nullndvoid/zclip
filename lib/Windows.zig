@@ -37,6 +37,9 @@ const log = std.log.scoped(.Windows);
 hwnd: HWND,
 io: Io,
 arena: *Arena,
+/// Allocates the clip payloads handed over via `clip_queue`; the queue
+/// consumer owns and frees them.
+clip_alloc: Allocator,
 worker_handle: Future(anyerror!void),
 lang_id: u32,
 clip_queue: *ClipQueue,
@@ -47,7 +50,7 @@ const Windows = @This();
 var lang_id_global: u32 = undefined;
 var alloc_global: Allocator = undefined;
 
-pub fn init(io: Io, arena: *Arena, clip_queue: *ClipQueue) !*Windows {
+pub fn init(io: Io, arena: *Arena, clip_alloc: Allocator, clip_queue: *ClipQueue) !*Windows {
     var hwnd: HWND = undefined;
     const lang_id = win32.GetUserDefaultUILanguage();
 
@@ -105,6 +108,7 @@ pub fn init(io: Io, arena: *Arena, clip_queue: *ClipQueue) !*Windows {
         .io = io,
         .hwnd = hwnd,
         .arena = arena,
+        .clip_alloc = clip_alloc,
         .worker_handle = try io.concurrent(workerThread, .{
             self,
         }),
