@@ -18,6 +18,10 @@ pub fn build(b: *std.Build) void {
     };
     exe_options.addOption(?[]const u8, "git_rev", git_rev);
 
+    const parseargv = b.dependency("parseargv", .{
+        .target = target,
+        .optimize = optimize,
+    });
     const known_folders = b.dependency("known_folders", .{});
     const serde = b.dependency("serde", .{
         .target = target,
@@ -53,9 +57,11 @@ pub fn build(b: *std.Build) void {
 
     exe.root_module.addImport("known-folders", known_folders.module("known-folders"));
     exe.root_module.addImport("serde", serde.module("serde"));
-    exe.root_module.addImport("noisey", noisey.module("noisey"));
     exe.root_module.addImport("sqlite", sqlite.module("sqlite"));
+
+    exe.root_module.addImport("noisey", noisey.module("noisey"));
     exe.root_module.addImport("clipboard", clipboard.module("clipboard"));
+    exe.root_module.addImport("argv", parseargv.module("parseargv"));
 
     exe.root_module.addOptions("options", exe_options);
 

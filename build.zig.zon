@@ -14,7 +14,7 @@
         },
         // TODO: Just implement Noise IK in house and delete this slop of a dependency.
         .noisey = .{
-            .url = "https://codeberg.org/nullndvoid2/noisey/archive/dev.tar.gz",
+            .url = "git+https://codeberg.org/nullndvoid/noisey.git#6a567d3479315e05b82f457ff7f2f6760a8c0f05",
             .hash = "noisey-0.0.0-J6MA0TdLBACZAeoJuvHEvps58GfEjvOIvr_4jycvxhAn",
         },
         .sqlite = .{
@@ -24,6 +24,10 @@
         .clipboard = .{
             .url = "git+https://codeberg.org/nullndvoid/clipboard-zig.git#11ea82869f4341e1b2dddd5995be571c70f3c601",
             .hash = "clipboard-0.1.0-kMlkMOwVAQAcYgQvX_VyiSf5ZFCczlPS8kshHsWE0IdO",
+        },
+        .parseargv = .{
+            .url = "git+https://codeberg.org/nullndvoid/parseargv.git#a3c3c4da7dcd57bde9b3325bbad1a58bffa4b9ca",
+            .hash = "parseargv-0.1.0-nw70e0i4AQBN813mqMBJvUzVn-Up6yeen9V2U31-KFOf",
         },
     },
     .paths = .{

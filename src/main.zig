@@ -15,6 +15,8 @@ const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
+const argv = @import("argv");
+
 const Cli = @import("Cli.zig");
 const Client = @import("Client.zig");
 const Config = @import("Config.zig");
@@ -65,13 +67,13 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     const writer = &stderr_fw.interface;
 
     const args = try minimal.args.toSlice(arena.allocator());
-    var diag = Cli.Diagnostics{};
-    const help_cfg = Cli.HelpOpts{
+    var diag = argv.Diagnostics{};
+    const help_cfg = argv.HelpOpts{
         .program_name = "zclip",
         .program_desc = "A tool to share your clipboard across systems.",
     };
 
-    var ctx = Cli.ParseCtx(Cli.Opts).init(
+    var ctx = argv.ParseCtx(Cli.Opts).init(
         arena.allocator(),
         args[1..],
         &diag,
