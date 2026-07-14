@@ -97,6 +97,11 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
 
     Log.level = if (cli_opts.verbose) .debug else .info;
 
+    if (cli_opts.command == null) {
+        try ctx.writeHelp(help_cfg, writer);
+        return;
+    }
+
     var envmap = try minimal.environ.createMap(gpa.allocator());
     defer envmap.deinit();
 
@@ -129,11 +134,6 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     const socket_path = cli_opts.socket_path orelse
         cfg.unix_socket_address orelse
         try getSocketPath(arena.allocator(), minimal.environ);
-
-    if (cli_opts.command == null) {
-        try ctx.writeHelp(help_cfg, writer);
-        return;
-    }
 
     const command = cli_opts.command.?;
 
