@@ -19,7 +19,10 @@ const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
 const serde = @import("serde");
-const zclip = @import("zclip");
+const zclip = @import("clipboard");
+
+const Clip = zclip.Clip;
+const Clipboard = zclip.Clipboard;
 
 const Network = @import("Network.zig");
 const Repo = @import("Repo.zig");
@@ -59,8 +62,8 @@ pub const CommandType = enum {
 pub const PostPeerPayload = struct { peer: Network.Peer, force: bool };
 
 pub const Command = union(CommandType) {
-    PostClip: zclip.Clip,
-    Clip: zclip.Clip,
+    PostClip: Clip,
+    Clip: Clip,
     GetPubkey,
     Pubkey: PublicKey,
     InvalidCommand,
@@ -71,7 +74,7 @@ pub const Command = union(CommandType) {
     DaemonError: []const u8,
 };
 
-clipboard: *zclip.Clipboard,
+clipboard: *Clipboard,
 io: Io,
 alloc: Allocator,
 server: Io.net.Server,
@@ -83,7 +86,7 @@ repo: *Repo,
 
 pub fn init(
     io: Io,
-    clipboard: *zclip.Clipboard,
+    clipboard: *Clipboard,
     alloc: Allocator,
     socket_path: []const u8,
     identity: Network.Identity,
@@ -307,7 +310,7 @@ pub fn writeCommandFramed(writer: *Io.Writer, alloc: Allocator, command: Command
     try writer.flush();
 }
 
-fn clipCallback(clip: *zclip.Clip, _: *void) anyerror!void {
+fn clipCallback(clip: *Clip, _: *void) anyerror!void {
     if (!clip.is_text) return;
 
     log.debug("Got clip {s}", .{clip.data});

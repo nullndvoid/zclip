@@ -8,40 +8,8 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const platform = b.option(
-        Platform,
-        "platform",
-        "Target platform",
-    ) orelse switch (target.result.os.tag) {
-        .linux => Platform.wayland,
-        .windows => Platform.windows,
-        else => @panic("unsupported platform"),
-    };
-
-    var wayland: *std.Build.Module = undefined;
-    var windows: *std.Build.Module = undefined;
-
-    switch (platform) {
-        .wayland => {
-            const scanner = Scanner.create(b, .{});
-            wayland = b.createModule(.{ .root_source_file = scanner.result });
-            scanner.addCustomProtocol(b.path("protocols/ext-data-control-v1.xml"));
-            scanner.addCustomProtocol(b.path("protocols/wlr-data-control-unstable-v1.xml"));
-
-            scanner.generate("ext_data_control_manager_v1", 1);
-            scanner.generate("zwlr_data_control_manager_v1", 1);
-            scanner.generate("wl_seat", 1);
-        },
-        .windows => {
-            const windows_dep = b.dependency("win32", .{});
-            windows = windows_dep.module("win32");
-        },
-    }
-
-    const options = b.addOptions();
     const exe_options = b.addOptions();
 
-    options.addOption(Platform, "platform", platform);
     exe_options.addOption([]const u8, "version", @import("build.zig.zon").version);
 
     const git_rev = gitShortRev(b) catch |err| blk: {
@@ -50,37 +18,26 @@ pub fn build(b: *std.Build) void {
     };
     exe_options.addOption(?[]const u8, "git_rev", git_rev);
 
-    const mod = b.addModule("zclip", .{
-        .root_source_file = b.path("lib/root.zig"),
-        .target = target,
-    });
-
-    mod.addOptions("options", options);
-    mod.link_libc = true;
-
-    switch (platform) {
-        .wayland => {
-            mod.addImport("wayland", wayland);
-            mod.linkSystemLibrary("wayland-client", .{
-                .use_pkg_config = .force,
-            });
-        },
-        .windows => {
-            mod.addImport("win32", windows);
-            mod.linkSystemLibrary("user32", .{});
-        },
-    }
-
     const known_folders = b.dependency("known_folders", .{});
     const serde = b.dependency("serde", .{
         .target = target,
         .optimize = optimize,
     });
+
     const noisey = b.dependency("noisey", .{
         .target = target,
         .optimize = optimize,
     });
-    const sqlite = b.dependency("sqlite", .{});
+
+    const sqlite = b.dependency("sqlite", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const clipboard = b.dependency("clipboard", .{
+        .target = target,
+        .optimize = optimize,
+    });
 
     const exe = b.addExecutable(.{
         .name = "zclip",
@@ -89,10 +46,6 @@ pub fn build(b: *std.Build) void {
 
             .target = target,
             .optimize = optimize,
-
-            .imports = &.{
-                .{ .name = "zclip", .module = mod },
-            },
         }),
         .use_llvm = true,
         .use_lld = true,
@@ -102,6 +55,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("serde", serde.module("serde"));
     exe.root_module.addImport("noisey", noisey.module("noisey"));
     exe.root_module.addImport("sqlite", sqlite.module("sqlite"));
+    exe.root_module.addImport("clipboard", clipboard.module("clipboard"));
 
     exe.root_module.addOptions("options", exe_options);
 
@@ -113,13 +67,6 @@ pub fn build(b: *std.Build) void {
         .use_llvm = true,
         .use_lld = true,
     });
-
-    exe_check.root_module.addImport("known-folders", known_folders.module("known-folders"));
-    exe_check.root_module.addImport("serde", serde.module("serde"));
-    exe_check.root_module.addImport("noisey", noisey.module("noisey"));
-    exe_check.root_module.addImport("sqlite", sqlite.module("sqlite"));
-
-    exe_check.root_module.addOptions("options", exe_options);
 
     const check = b.step("check", "Check if zclip application compiles.");
     check.dependOn(&exe_check.step);
@@ -134,18 +81,6 @@ pub fn build(b: *std.Build) void {
         run_cmd.addArgs(args);
     }
 
-    const mod_tests = b.addTest(.{
-        .root_module = mod,
-        .test_runner = .{
-            .mode = .simple,
-            .path = b.path("test_runner.zig"),
-        },
-        .use_llvm = true,
-        .use_lld = true,
-    });
-
-    const run_mod_tests = b.addRunArtifact(mod_tests);
-
     const exe_tests = b.addTest(.{
         .root_module = exe.root_module,
         .test_runner = .{
@@ -159,7 +94,6 @@ pub fn build(b: *std.Build) void {
     const run_exe_tests = b.addRunArtifact(exe_tests);
 
     const test_step = b.step("test", "Run tests");
-    test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
 }
 

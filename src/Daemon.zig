@@ -15,7 +15,10 @@ const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
-const zclip = @import("zclip");
+const zclip = @import("clipboard");
+
+const Clipboard = zclip.Clipboard;
+const Clip = zclip.Clip;
 
 const Config = @import("Config.zig");
 const Network = @import("Network.zig");
@@ -27,7 +30,7 @@ const Daemon = @This();
 opts: Opts,
 alloc: Allocator,
 io: Io,
-clipboard: ?*zclip.Clipboard,
+clipboard: ?*Clipboard,
 select_tasks: ?Io.Select(TaskResults),
 select_tasks_buf: [2]TaskResults,
 identity: Network.Identity,
@@ -41,7 +44,7 @@ const TaskResults = union(enum) {
 const log = std.log.scoped(.Daemon);
 
 pub const Opts = struct {
-    clipboard: zclip.Clipboard.Config = .{},
+    clipboard: Clipboard.Config = .{},
     socket_path: []const u8,
     inet: Network.Config = .{},
     data_dir: []const u8,
@@ -60,7 +63,7 @@ pub fn init(io: Io, alloc: Allocator, identity: Network.Identity, opts: Opts) Da
     };
 }
 
-fn clipCallback(clip: *zclip.Clip, _: *void) anyerror!void {
+fn clipCallback(clip: *Clip, _: *void) anyerror!void {
     if (!clip.is_text) return;
 
     log.debug("Got clip {s}", .{clip.data});
@@ -68,11 +71,14 @@ fn clipCallback(clip: *zclip.Clip, _: *void) anyerror!void {
 
 /// Starts the daemon worker, blocking. May be cancelled by a signal. See signal handling in `main.zig`.
 pub fn start(self: *Daemon) !void {
+    var arena = std.heap.ArenaAllocator.init(self.alloc);
+    defer arena.deinit();
+
     // The clipboard outlives this function (it is torn down in `deinit`),
     // so it must not be backed by a stack-local arena.
-    self.clipboard = try zclip.Clipboard.init(
+    self.clipboard = try Clipboard.init(
         self.io,
-        self.alloc,
+        &arena,
         self.opts.clipboard,
     );
 

@@ -19,7 +19,7 @@ const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
 const build_options = @import("options");
-const zclip = @import("zclip");
+const clip = @import("clipboard");
 
 const Help = @import("cli/Help.zig");
 pub const HelpOpts = Help.Opts;
