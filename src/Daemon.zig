@@ -30,6 +30,7 @@ const Daemon = @This();
 opts: Opts,
 alloc: Allocator,
 io: Io,
+start_arena: std.heap.ArenaAllocator,
 clipboard: ?*Clipboard,
 select_tasks: ?Io.Select(TaskResults),
 select_tasks_buf: [2]TaskResults,
@@ -60,6 +61,7 @@ pub fn init(io: Io, alloc: Allocator, identity: Network.Identity, opts: Opts) Da
         .select_tasks_buf = undefined,
         .identity = identity,
         .repo = undefined,
+        .start_arena = std.heap.ArenaAllocator.init(alloc),
     };
 }
 
@@ -71,14 +73,11 @@ fn clipCallback(clip: *Clip, _: *void) anyerror!void {
 
 /// Starts the daemon worker, blocking. May be cancelled by a signal. See signal handling in `main.zig`.
 pub fn start(self: *Daemon) !void {
-    var arena = std.heap.ArenaAllocator.init(self.alloc);
-    defer arena.deinit();
-
     // The clipboard outlives this function (it is torn down in `deinit`),
     // so it must not be backed by a stack-local arena.
     self.clipboard = try Clipboard.init(
         self.io,
-        &arena,
+        &self.start_arena,
         self.opts.clipboard,
     );
 
@@ -127,4 +126,6 @@ pub fn deinit(self: *Daemon) void {
         clipboard.deinit();
         self.clipboard = null;
     }
+
+    self.start_arena.deinit();
 }
