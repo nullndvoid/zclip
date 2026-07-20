@@ -16,7 +16,6 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
 const zclip = @import("clipboard");
-
 const Clipboard = zclip.Clipboard;
 const Clip = zclip.Clip;
 
@@ -31,7 +30,7 @@ opts: Opts,
 alloc: Allocator,
 io: Io,
 start_arena: std.heap.ArenaAllocator,
-clipboard: ?*Clipboard,
+clipboard: ?Clipboard,
 select_tasks: ?Io.Select(TaskResults),
 select_tasks_buf: [2]TaskResults,
 identity: Network.Identity,
@@ -45,7 +44,6 @@ const TaskResults = union(enum) {
 const log = std.log.scoped(.Daemon);
 
 pub const Opts = struct {
-    clipboard: Clipboard.Config = .{},
     socket_path: []const u8,
     inet: Network.Config = .{},
     data_dir: []const u8,
@@ -73,15 +71,7 @@ fn clipCallback(clip: *Clip, _: *void) anyerror!void {
 
 /// Starts the daemon worker, blocking. May be cancelled by a signal. See signal handling in `main.zig`.
 pub fn start(self: *Daemon) !void {
-    // The clipboard outlives this function (it is torn down in `deinit`),
-    // so it must not be backed by a stack-local arena.
-    self.clipboard = try Clipboard.init(
-        self.io,
-        &self.start_arena,
-        self.opts.clipboard,
-    );
-
-    self.clipboard.?.setOnClip(void, clipCallback, @constCast(&{}));
+    self.clipboard = try Clipboard.init(self.io, self.alloc, .{});
 
     const repo = try Repo.init(self.opts.data_dir, self.alloc);
     self.repo = repo;
@@ -93,9 +83,10 @@ pub fn start(self: *Daemon) !void {
     self.select_tasks = .init(self.io, &self.select_tasks_buf);
     defer self.select_tasks.?.cancelDiscard();
 
+    std.debug.assert(self.clipboard != null);
     var unix = try UnixSocket.init(
         self.io,
-        self.clipboard.?,
+        &self.clipboard.?,
         self.alloc,
         self.opts.socket_path,
         self.identity,
@@ -122,7 +113,7 @@ pub fn deinit(self: *Daemon) void {
         self.select_tasks = null;
     }
 
-    if (self.clipboard) |clipboard| {
+    if (self.clipboard) |*clipboard| {
         clipboard.deinit();
         self.clipboard = null;
     }

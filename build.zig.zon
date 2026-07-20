@@ -22,8 +22,8 @@
             .hash = "sqlite-0.4.0-3530100-djiKTqCBAABomylmlMLWtzm9bE_8NQ1O7qVu6l9x6aP1",
         },
         .clipboard = .{
-            .url = "git+https://codeberg.org/nullndvoid/clipboard-zig.git#11ea82869f4341e1b2dddd5995be571c70f3c601",
-            .hash = "clipboard-0.1.0-kMlkMOwVAQAcYgQvX_VyiSf5ZFCczlPS8kshHsWE0IdO",
+            .url = "git+https://codeberg.org/nullndvoid/clipboard-zig#5e2bfe01f6c6db20ce1f4a47857e89f68c9c7e6b",
+            .hash = "clipboard-0.1.0-kMlkML0MAgANPML1T9b_OelbzirzNOq3fnSLnHbrHGPc",
         },
         .parseargv = .{
             .url = "git+https://codeberg.org/nullndvoid/parseargv.git#a3c3c4da7dcd57bde9b3325bbad1a58bffa4b9ca",
