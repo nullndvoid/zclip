@@ -12,13 +12,14 @@
 // GNU General Public License for more details.
 
 //! Sets up Noise sessions between local and remote peer.
+//!
+//! Uses Noise_IK_25519.
 
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const Hasher = std.crypto.hash.sha2.Sha256;
 
-const noisey = @import("noisey");
 const serde = @import("serde");
 
 const Network = @import("../Network.zig");
@@ -27,16 +28,20 @@ const util = @import("../util.zig");
 
 const log = std.log.scoped(.NoiseSession);
 
-const H = noisey.Hash.Hash(Hasher);
-
 const NoiseSession = @This();
+
+/// Encrypted and framed messages are always this large.
+pub const MESSAGE_LENGTH = 65535;
+pub const AEAD_TAG_LENGTH = 16;
+// 16 bytes AEAD tag and u16 prefix for padding gives the biggest possible plaintext.
+pub const MAX_PAYLOAD_LENGTH = MESSAGE_LENGTH - AEAD_TAG_LENGTH - 2;
 
 const PATTERN = "Noise_IK_25519_AESGCM_SHA256";
 io: Io,
 alloc: Allocator,
 opts: Opts,
-read: noisey.CipherState,
-write: noisey.CipherState,
+// read: noisey.CipherState,
+// write: noisey.CipherState,
 read_buf: []u8,
 write_buf: []u8,
 plain_buf: []u8,
@@ -64,6 +69,13 @@ pub fn deinit(self: *NoiseSession) void {
     self.alloc.free(self.plain_buf);
 }
 
+/// Initiator if `peer_pubkey` is not null.
+///
+/// All messages are sent padded, prefixed with their actual size.
+///
+/// * AEAD is AES256-GCM
+/// * DH is x25519
+/// * Hash function is SHA-256.
 pub fn init(
     io: Io,
     alloc: Allocator,
@@ -71,41 +83,16 @@ pub fn init(
     writer: *Io.Writer,
     local_keypair: Network.Identity,
     peer_pubkey: ?[]const u8,
-    opts: Opts,
     repo: *Repo,
 ) !NoiseSession {
-    const read_buf = try alloc.alloc(u8, noisey.MAX_MESSAGE_LENGTH);
+    const read_buf = try alloc.alloc(u8, MAX_MESSAGE_LENGTH);
     errdefer alloc.free(read_buf);
 
-    const write_buf = try alloc.alloc(u8, noisey.MAX_MESSAGE_LENGTH);
+    const write_buf = try alloc.alloc(u8, MAX_MESSAGE_LENGTH);
     errdefer alloc.free(write_buf);
 
-    const plain_buf = try alloc.alloc(u8, noisey.MAX_PAYLOAD_LENGTH);
+    const plain_buf = try alloc.alloc(u8, MAX_PAYLOAD_LENGTH);
     errdefer alloc.free(plain_buf);
-
-    var aes = noisey.Cipher.Aes256Gcm{};
-    const cipher_unpadded = aes.cipher(false);
-
-    var x25519 = noisey.Dh.X25519.init(io, alloc);
-    const dh = x25519.interface();
-
-    const kp = noisey.Dh.KeyPair{
-        .private = &local_keypair.private_key,
-        .public = &local_keypair.public_key,
-    };
-
-    var handshake = try noisey.HandshakeState(H).init(
-        alloc,
-        cipher_unpadded,
-        dh,
-        noisey.IK,
-        PATTERN,
-        &.{},
-        opts.initiator,
-        kp,
-        if (opts.initiator) peer_pubkey else null,
-    );
-    defer handshake.deinit();
 
     var msg_buf: [256]u8 = undefined;
     var payload_buf: [256]u8 = undefined;
@@ -115,7 +102,8 @@ pub fn init(
     var pubkey_b64: []const u8 = if (peer_pubkey) |pubkey|
         try util.base64encode(pubkey, alloc)
     else
-        ""; // On error, free of empty slice is a no-op.
+        &.{};
+
     defer alloc.free(pubkey_b64);
 
     if (opts.initiator) {
