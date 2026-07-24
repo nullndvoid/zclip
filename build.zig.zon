@@ -12,18 +12,13 @@
             .url = "git+https://github.com/nullndvoid/serde.zig#8c37529de2d75c9cb610715507c5812f50640126",
             .hash = "serde-1.0.1-1DszT4J0DQCrmlz97iSvTtJjQt0tv9zLuwSq5Ypf0Ewh",
         },
-        // TODO: Just implement Noise IK in house and delete this slop of a dependency.
-        .noisey = .{
-            .url = "git+https://codeberg.org/nullndvoid/noisey.git#6a567d3479315e05b82f457ff7f2f6760a8c0f05",
-            .hash = "noisey-0.0.0-J6MA0TdLBACZAeoJuvHEvps58GfEjvOIvr_4jycvxhAn",
-        },
         .sqlite = .{
             .url = "https://github.com/nDimensional/zig-sqlite/archive/refs/tags/v0.4.0-3530100.tar.gz",
             .hash = "sqlite-0.4.0-3530100-djiKTqCBAABomylmlMLWtzm9bE_8NQ1O7qVu6l9x6aP1",
         },
         .clipboard = .{
-            .url = "git+https://codeberg.org/nullndvoid/clipboard-zig#5e2bfe01f6c6db20ce1f4a47857e89f68c9c7e6b",
-            .hash = "clipboard-0.1.0-kMlkML0MAgANPML1T9b_OelbzirzNOq3fnSLnHbrHGPc",
+            .url = "https://codeberg.org/nullndvoid/clipboard-zig/archive/v0.2.0.tar.gz",
+            .hash = "clipboard-0.2.0-kMlkMDU1AgDMjZO0Ycbp7rV-TX4Du6Q_H26ymNJpsloi",
         },
         .parseargv = .{
             .url = "git+https://codeberg.org/nullndvoid/parseargv.git#a3c3c4da7dcd57bde9b3325bbad1a58bffa4b9ca",

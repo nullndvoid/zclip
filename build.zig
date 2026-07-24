@@ -28,11 +28,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    const noisey = b.dependency("noisey", .{
-        .target = target,
-        .optimize = optimize,
-    });
-
     const sqlite = b.dependency("sqlite", .{
         .target = target,
         .optimize = optimize,
@@ -59,7 +54,6 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("serde", serde.module("serde"));
     exe.root_module.addImport("sqlite", sqlite.module("sqlite"));
 
-    exe.root_module.addImport("noisey", noisey.module("noisey"));
     exe.root_module.addImport("clipboard", clipboard.module("clipboard"));
     exe.root_module.addImport("argv", parseargv.module("parseargv"));
 
