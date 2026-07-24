@@ -29,7 +29,7 @@ const CipherState = @This();
 /// 2 byte length prefix + padded payload.
 const PLAIN_LENGTH = NoiseSession.MESSAGE_LENGTH - NoiseSession.AEAD_TAG_LENGTH;
 
-key: [32]u8,
+key: ?[32]u8,
 nonce: u64,
 /// Always used for padding plaintext messages to avoid a heap allocation.
 msgbuf: [PLAIN_LENGTH]u8,
@@ -40,7 +40,7 @@ pub const CipherStateError = error{
     InvalidLength,
 };
 
-pub fn init(key: [32]u8) CipherState {
+pub fn init(key: ?[32]u8) CipherState {
     return .{
         .key = key,
         .nonce = 0,
@@ -49,7 +49,9 @@ pub fn init(key: [32]u8) CipherState {
 }
 
 pub fn deinit(self: *CipherState) void {
-    std.crypto.secureZero(u8, &self.key);
+    if (self.key) |*k| std.crypto.secureZero(u8, k);
+    self.key = null;
+
     std.crypto.secureZero(u8, &self.msgbuf);
     self.nonce = 0;
 }
@@ -63,23 +65,29 @@ pub fn deinit(self: *CipherState) void {
 pub fn encryptWithAd(self: *CipherState, ad: []const u8, plaintext: []const u8, ciphertext: []u8) CipherStateError![]const u8 {
     assert(ciphertext.len == NoiseSession.MESSAGE_LENGTH);
 
-    if (self.nonce == std.math.maxInt(u64)) return error.NonceExhausted;
-
-    var nonce: [12]u8 = @splat(0);
-    std.mem.writeInt(u64, nonce[4..], self.nonce, .big);
-
     const padded_plaintext = try self.pad(plaintext);
 
-    Aes256Gcm.encrypt(
-        ciphertext[0..PLAIN_LENGTH],
-        ciphertext[PLAIN_LENGTH..][0..NoiseSession.AEAD_TAG_LENGTH],
-        padded_plaintext,
-        ad,
-        nonce,
-        self.key,
-    );
+    if (self.key) |k| {
+        if (self.nonce == std.math.maxInt(u64)) return error.NonceExhausted;
 
-    self.nonce += 1;
+        var nonce: [12]u8 = @splat(0);
+        std.mem.writeInt(u64, nonce[4..], self.nonce, .big);
+
+        Aes256Gcm.encrypt(
+            ciphertext[0..PLAIN_LENGTH],
+            ciphertext[PLAIN_LENGTH..][0..NoiseSession.AEAD_TAG_LENGTH],
+            padded_plaintext,
+            ad,
+            nonce,
+            k,
+        );
+
+        self.nonce += 1;
+    } else {
+        @branchHint(.unlikely);
+        @memcpy(ciphertext[0..PLAIN_LENGTH], padded_plaintext);
+        std.crypto.secureZero(u8, ciphertext[PLAIN_LENGTH..]);
+    }
 
     return ciphertext;
 }
@@ -91,21 +99,26 @@ pub fn encryptWithAd(self: *CipherState, ad: []const u8, plaintext: []const u8, 
 pub fn decryptWithAd(self: *CipherState, ad: []const u8, ciphertext: []const u8) CipherStateError![]const u8 {
     assert(ciphertext.len == NoiseSession.MESSAGE_LENGTH);
 
-    if (self.nonce == std.math.maxInt(u64)) return error.NonceExhausted;
+    if (self.key) |k| {
+        if (self.nonce == std.math.maxInt(u64)) return error.NonceExhausted;
 
-    var nonce: [12]u8 = @splat(0);
-    std.mem.writeInt(u64, nonce[4..], self.nonce, .big);
+        var nonce: [12]u8 = @splat(0);
+        std.mem.writeInt(u64, nonce[4..], self.nonce, .big);
 
-    Aes256Gcm.decrypt(
-        &self.msgbuf,
-        ciphertext[0..PLAIN_LENGTH],
-        ciphertext[PLAIN_LENGTH..][0..NoiseSession.AEAD_TAG_LENGTH].*,
-        ad,
-        nonce,
-        self.key,
-    ) catch return error.DecryptionFailed;
+        Aes256Gcm.decrypt(
+            &self.msgbuf,
+            ciphertext[0..PLAIN_LENGTH],
+            ciphertext[PLAIN_LENGTH..][0..NoiseSession.AEAD_TAG_LENGTH].*,
+            ad,
+            nonce,
+            k,
+        ) catch return error.DecryptionFailed;
 
-    self.nonce += 1;
+        self.nonce += 1;
+    } else {
+        @branchHint(.unlikely);
+        @memcpy(&self.msgbuf, ciphertext[0..PLAIN_LENGTH]);
+    }
 
     return self.unpad();
 }
