@@ -115,11 +115,6 @@ fn sendCommand(self: *Client, command: Command) !Command {
     return try self.sendCommandRw(rdr, writer, command);
 }
 
-const SelectTask = union(enum) {
-    timer: Io.Cancelable!void,
-    read: ClientError!Command,
-};
-
 fn sendCommandRw(self: *Client, rdr: *Io.Reader, writer: *Io.Writer, command: Command) ClientError!Command {
     switch (command) {
         .Clip, .Pubkey, .Peers, .Ok, .DaemonError => return error.ServerCommand,
