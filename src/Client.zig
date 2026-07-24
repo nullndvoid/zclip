@@ -138,44 +138,39 @@ fn sendCommandRw(self: *Client, rdr: *Io.Reader, writer: *Io.Writer, command: Co
         return error.WriteFailed;
     };
 
-    var select_tasks: [2]SelectTask = undefined;
-    var select = Io.Select(SelectTask).init(self.io, &select_tasks);
+    var ev = Io.Event.unset;
 
-    try select.concurrent(.read, readResponseHelper, .{ self, rdr, resp_tag });
-    try select.concurrent(.timer, Io.sleep, .{
+    var future = try self.io.concurrent(readResponseHelper, .{ self, rdr, resp_tag, &ev });
+    ev.waitTimeout(
         self.io,
-        .fromMilliseconds(200),
-        .real,
-    });
-
-    defer select.cancelDiscard();
-
-    const res = try select.await();
-    switch (res) {
-        .read => |rd| {
-            const cmd = rd catch |err| {
-                log.err("Failed to read daemon response. Reason: {t}", .{err});
-
-                return err;
-            };
-
-            return cmd;
+        .{
+            .duration = .{
+                .raw = .fromMilliseconds(200),
+                .clock = .awake,
+            },
         },
-        .timer => |resp| {
-            resp catch |err| {
-                switch (err) {
-                    error.Canceled => return err,
-                }
-            };
-
+    ) catch |err| switch (err) {
+        error.Timeout => {
             log.err("Wait for daemon response timed out.", .{});
-
             return error.ResponseTimedOut;
         },
-    }
+        error.Canceled => |e| return e,
+    };
+
+    const cmd = future.await(self.io) catch |err| {
+        if (err == error.Canceled) return err;
+
+        log.err("Failed to read daemon response. Reason: {t}", .{err});
+
+        return err;
+    };
+
+    return cmd;
 }
 
-fn readResponseHelper(self: *Client, rdr: *Io.Reader, expected_tag: CommandType) ClientError!Command {
+fn readResponseHelper(self: *Client, rdr: *Io.Reader, expected_tag: CommandType, ev: *Io.Event) ClientError!Command {
+    defer ev.set(self.io);
+
     const reply = UnixSocket.readFramedCommand(rdr, self.arena.allocator(), .{}) catch |err| {
         log.err("Failed to read reply from daemon. Reason: {t}", .{err});
 
