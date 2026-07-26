@@ -110,10 +110,16 @@ pub const HandshakeError = error{
     MissingRemoteStatic,
     /// You are not the initiator but gave a remote static key!
     RemoteStaticGiven,
+    /// No local static keypair was given. IK requires one for both roles.
+    MissingLocalStatic,
     /// You are writing or reading a message when you should not be.
     OutOfTurn,
     /// The DH public key used was invalid.
     PublicKeyInvalid,
+    /// Some handshake invariant was violated.
+    InvalidState,
+    MessageTooShort,
+    BufferTooShort,
 } || CipherState.Error;
 
 /// Since we only claim to support Noise IK, this initialiser reflects this.
@@ -128,9 +134,13 @@ pub fn init(initiator: bool, prologue: []const u8, s: ?KeyPair, rs: ?Key) Handsh
     // Upholds our pre-message invariant for Noise IK.
     if (initiator and rs == null) return error.MissingRemoteStatic;
     if (!initiator and rs != null) return error.RemoteStaticGiven;
+    if (s == null) return error.MissingLocalStatic;
 
-    // Now it is sufficient to check for presence of rs lol.
-    if (rs) |rspk| sym.mixHash(&rspk);
+    if (initiator) {
+        sym.mixHash(&rs.?);
+    } else {
+        sym.mixHash(&s.?.public);
+    }
 
     // End of pre-messages. Should be done now.
     return .{
@@ -167,6 +177,9 @@ pub fn writeMessage(
                 self.e = .generate(io);
                 const pubkey = self.e.?.public;
 
+                if (pubkey.len > message_buffer[pos..].len)
+                    return error.BufferTooShort;
+
                 @memcpy(message_buffer[pos..][0..pubkey.len], &pubkey);
 
                 pos += pubkey.len;
@@ -175,6 +188,10 @@ pub fn writeMessage(
             },
             .s => {
                 const s = self.s.?;
+
+                if (s.public.len + CipherState.TAG_LENGTH > message_buffer[pos..].len)
+                    return error.BufferTooShort;
+
                 const bytes = try self.symmetric_state.encryptAndHash(
                     &s.public,
                     message_buffer[pos..],
@@ -225,18 +242,25 @@ pub fn readMessage(
     for (pattern) |token| {
         switch (token) {
             .e => {
-                assert(self.re == null);
+                if (self.re != null) return error.InvalidState;
+
+                if (DH_LENGTH > message[pos..].len)
+                    return error.MessageTooShort;
+
                 self.re = message[pos..][0..DH_LENGTH].*;
                 self.symmetric_state.mixHash(&self.re.?);
                 pos += DH_LENGTH;
             },
             .s => {
-                assert(self.rs == null);
+                if (self.rs != null) return error.InvalidState;
 
                 const field_len: usize = if (self.symmetric_state.cipher_state.key != null)
                     DH_LENGTH + NoiseSession.AEAD_TAG_LENGTH
                 else
                     DH_LENGTH;
+
+                if (field_len > message[pos..].len)
+                    return error.MessageTooShort;
 
                 const temp = message[pos..][0..field_len];
                 pos += field_len;
@@ -281,4 +305,58 @@ pub fn done(self: *const HandshakeState) bool {
 
 pub fn split(self: *HandshakeState) struct { CipherState, CipherState } {
     return self.symmetric_state.split();
+}
+
+test "full handshake" {
+    const io = std.testing.io;
+
+    const initiator_kp = KeyPair.generate(io);
+    const responder_kp = KeyPair.generate(io);
+
+    var initiator = try init(true, "", initiator_kp, responder_kp.public);
+    var responder = try init(false, "", responder_kp, null);
+
+    // Should be sufficient.
+    var initiator_msg_buf: [256]u8 = undefined;
+    var responder_msg_buf: [256]u8 = undefined;
+    var payload_buf: [256]u8 = undefined;
+
+    const m0_wrote = try initiator.writeMessage(io, &.{}, &initiator_msg_buf);
+
+    // Now responder can read.
+    _ = try responder.readMessage(initiator_msg_buf[0..m0_wrote], &payload_buf);
+
+    const m1_wrote = try responder.writeMessage(io, "", &responder_msg_buf);
+
+    _ = try initiator.readMessage(responder_msg_buf[0..m1_wrote], &payload_buf);
+
+    // Now we should be done. We can just check the shared keys.
+    try std.testing.expect(initiator.done());
+    try std.testing.expect(responder.done());
+
+    try std.testing.expectEqualSlices(
+        u8,
+        &initiator.symmetric_state.cipher_state.key.?,
+        &responder.symmetric_state.cipher_state.key.?,
+    );
+
+    // Or better yet, encrypt and decrypt some messages.
+    var write, var read = initiator.split();
+    var resp_read, var resp_write = responder.split();
+
+    const msg = "ping";
+    var out_buf: [4 + CipherState.TAG_LENGTH]u8 = undefined;
+
+    {
+        _ = try write.aeadEncrypt("", msg, &out_buf);
+        const len = try resp_read.aeadDecrypt("", &out_buf, &out_buf);
+        try std.testing.expectEqualStrings(msg, out_buf[0..len]);
+    }
+
+    {
+        const pong = "pong";
+        _ = try resp_write.aeadEncrypt("", pong, &out_buf);
+        const len = try read.aeadDecrypt("", &out_buf, &out_buf);
+        try std.testing.expectEqualStrings(pong, out_buf[0..len]);
+    }
 }
