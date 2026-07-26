@@ -192,11 +192,7 @@ fn connectToPeer(self: *Network, peer: Peer) error{Canceled}!void {
             rdr,
             writer,
             self.identity,
-
             &peer.pubkey,
-            .{
-                .initiator = true,
-            },
             self.repo,
         ) catch |err| switch (err) {
             error.PeerDoesNotHoldPubkey => {
@@ -273,9 +269,6 @@ fn handleConnectionRw(self: *Network, rdr: *Io.Reader, writer: *Io.Writer) !void
         writer,
         self.identity,
         null,
-        .{
-            .initiator = false,
-        },
         self.repo,
     ) catch |err| switch (err) {
         error.UnknownPeer, error.PeerDoesNotHoldPubkey => return,

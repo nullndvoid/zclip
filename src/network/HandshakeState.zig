@@ -30,8 +30,8 @@ const SymmetricState = @import("SymmetricState.zig");
 
 const HandshakeState = @This();
 
-const Key = [CipherState.KEY_LENGTH]u8;
-const SharedKey = [DH_LENGTH]u8;
+pub const Key = [CipherState.KEY_LENGTH]u8;
+pub const SharedKey = [DH_LENGTH]u8;
 
 /// For now we just support the one fixed protocol.
 pub const PROTOCOL_NAME = "Noise_IK_25519_AESGCM_SHA256";
@@ -101,7 +101,7 @@ initiator: bool,
 /// parsing any sequence of tokens etc.
 ///
 /// Even indices sent by initiator, odd by responder.
-message_patterns: []const MessagePattern = IK,
+message_patterns: []const MessagePattern = &IK,
 /// Current index of `message_patterns`.
 pattern_idx: usize = 0,
 
@@ -233,7 +233,7 @@ pub fn readMessage(
             .s => {
                 assert(self.rs == null);
 
-                const field_len = if (self.symmetric_state.cipher_state.key != null)
+                const field_len: usize = if (self.symmetric_state.cipher_state.key != null)
                     DH_LENGTH + NoiseSession.AEAD_TAG_LENGTH
                 else
                     DH_LENGTH;

@@ -63,12 +63,6 @@ pub fn init(io: Io, alloc: Allocator, identity: Network.Identity, opts: Opts) Da
     };
 }
 
-fn clipCallback(clip: *Clip, _: *void) anyerror!void {
-    if (!clip.is_text) return;
-
-    log.debug("Got clip {s}", .{clip.data});
-}
-
 /// Starts the daemon worker, blocking. May be cancelled by a signal. See signal handling in `main.zig`.
 pub fn start(self: *Daemon) !void {
     self.clipboard = try Clipboard.init(self.io, self.alloc, .{});
