@@ -22,10 +22,6 @@ const Base64 = std.base64.standard;
 const known = @import("known-folders");
 const Serde = @import("serde");
 
-const models = @import("models.zig");
-const Peer = models.NetworkPeer;
-const Network = @import("Network.zig");
-
 const BACKEND_ALLOC_LIMIT_DEFAULT = 1024 * 1024 * 512;
 const IS_DEBUG = @import("builtin").mode == .Debug;
 
