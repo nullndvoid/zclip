@@ -134,3 +134,14 @@ pub fn split(self: *SymmetricState) struct { CipherState, CipherState } {
 
     return .{ c1, c2 };
 }
+
+test "init pads short protocol name" {
+    const protocol_name = @import("HandshakeState.zig").PROTOCOL_NAME;
+    var zeroes: [4]u8 = @splat(0);
+
+    var state = init(protocol_name);
+    defer state.deinit();
+
+    try std.testing.expectEqualSlices(u8, protocol_name, state.hash[0..protocol_name.len]);
+    try std.testing.expectEqualSlices(u8, &zeroes, state.hash[protocol_name.len..]);
+}
