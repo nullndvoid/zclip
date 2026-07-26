@@ -114,7 +114,7 @@ pub const HandshakeError = error{
     OutOfTurn,
     /// The DH public key used was invalid.
     PublicKeyInvalid,
-} || CipherState.CipherStateError;
+} || CipherState.Error;
 
 /// Since we only claim to support Noise IK, this initialiser reflects this.
 ///

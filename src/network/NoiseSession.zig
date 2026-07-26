@@ -18,7 +18,7 @@
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
-const Hasher = std.crypto.hash.sha2.Sha256;
+const assert = std.debug.assert;
 
 const serde = @import("serde");
 
@@ -26,6 +26,8 @@ const Network = @import("../Network.zig");
 const Repo = @import("../Repo.zig");
 const util = @import("../util.zig");
 const CipherState = @import("CipherState.zig");
+const Error = CipherState.Error;
+pub const AEAD_TAG_LENGTH = CipherState.TAG_LENGTH;
 const HandshakeState = @import("HandshakeState.zig");
 
 const log = std.log.scoped(.NoiseSession);
@@ -34,9 +36,10 @@ const NoiseSession = @This();
 
 /// Encrypted and framed messages are always this large.
 pub const MESSAGE_LENGTH = 65535;
-pub const AEAD_TAG_LENGTH = 16;
+/// 2 byte length prefix + padded payload.
+const PLAIN_LENGTH = MESSAGE_LENGTH - AEAD_TAG_LENGTH;
 // 16 bytes AEAD tag and u16 prefix for padding gives the biggest possible plaintext.
-pub const MAX_PAYLOAD_LENGTH = MESSAGE_LENGTH - AEAD_TAG_LENGTH - 2;
+pub const MAX_PAYLOAD_LENGTH = PLAIN_LENGTH - 2;
 
 /// Handshake messages are small but size generously.
 const HANDSHAKE_BUF_LEN = 256;
@@ -101,13 +104,12 @@ pub fn init(
     var payload_buf: [HANDSHAKE_BUF_LEN]u8 = undefined;
 
     var peer: ?Network.Peer = null;
-    var pubkey_b64: []const u8 = &.{};
-    defer if (pubkey_b64.len != 0) alloc.free(pubkey_b64);
+    var pubkey_b64: [44]u8 = undefined;
 
     if (initiator) {
-        pubkey_b64 = try util.base64encode(peer_pubkey.?, alloc);
+        pubkey_b64 = util.encodeKey(peer_pubkey.?[0..32].*);
 
-        peer = repo.getPeerByPubkey(pubkey_b64, alloc) catch |err| switch (err) {
+        peer = repo.getPeerByPubkey(&pubkey_b64, alloc) catch |err| switch (err) {
             error.NotFound => {
                 log.warn("Attempted to connect to peer with pubkey {s} but it was not found in the DB!", .{pubkey_b64});
                 return error.UnknownPeer;
@@ -137,9 +139,9 @@ pub fn init(
         };
 
         std.debug.assert(handshake.rs != null);
-        pubkey_b64 = try util.base64encode(&handshake.rs.?, alloc);
+        pubkey_b64 = util.encodeKey(handshake.rs.?);
 
-        peer = repo.getPeerByPubkey(pubkey_b64, alloc) catch |err| switch (err) {
+        peer = repo.getPeerByPubkey(&pubkey_b64, alloc) catch |err| switch (err) {
             error.NotFound => {
                 log.warn("Peer tried connecting with unknown pubkey {s}. Aborting.", .{pubkey_b64});
                 return error.UnknownPeer;
@@ -191,7 +193,7 @@ fn readFrame(rdr: *Io.Reader, buf: []u8) ![]const u8 {
 }
 
 pub fn send(self: *NoiseSession, writer: *Io.Writer, data: []const u8) !void {
-    const bytes = try self.write.encryptWithAdFramed("", data, self.write_buf);
+    const bytes = try encryptWithAdFramed(&self.write, "", data, self.write_buf);
     std.debug.assert(bytes.len == MESSAGE_LENGTH);
 
     try sendFrame(writer, bytes);
@@ -201,7 +203,7 @@ pub fn send(self: *NoiseSession, writer: *Io.Writer, data: []const u8) !void {
 pub fn recv(self: *NoiseSession, rdr: *Io.Reader) ![]const u8 {
     const frame = try readFrame(rdr, self.read_buf);
 
-    const got = try self.read.decryptWithAdFramed("", frame);
+    const got = try decryptWithAdFramed(&self.read, "", frame, self.read_buf);
     @memcpy(self.plain_buf[0..got.len], got);
 
     return self.plain_buf[0..got.len];
@@ -219,4 +221,63 @@ pub fn recvT(self: *NoiseSession, comptime T: type, rdr: *Io.Reader, alloc: Allo
     const bytes = try self.recv(rdr);
 
     return try serde.msgpack.fromSlice(T, alloc, bytes);
+}
+
+/// `ciphertext` must be of size `MESSAGE_LENGTH` i.e. 65535, and doubles as
+/// the pad buffer: `plaintext` is padded into it, then encrypted in place.
+///
+/// `plaintext` will be padded for you. Returns `error.InvalidLength` if
+/// `plaintext` is larger than `MAX_PAYLOAD_LENGTH`.
+///
+/// Returned value is simply the same slice passed in for `ciphertext`.
+pub fn encryptWithAdFramed(self: *CipherState, ad: []const u8, plaintext: []const u8, ciphertext: []u8) Error![]const u8 {
+    assert(ciphertext.len == MESSAGE_LENGTH);
+
+    const padded_plaintext = try pad(plaintext, ciphertext);
+
+    _ = try self.aeadEncrypt(ad, padded_plaintext, ciphertext);
+
+    return ciphertext;
+}
+
+/// `ciphertext` must be of size `MESSAGE_LENGTH` i.e. 65535. `buf` is at
+/// least `PLAIN_LENGTH` bytes and may alias `ciphertext`.
+pub fn decryptWithAdFramed(self: *CipherState, ad: []const u8, ciphertext: []const u8, buf: []u8) Error![]const u8 {
+    assert(ciphertext.len == MESSAGE_LENGTH);
+
+    _ = try self.aeadDecrypt(ad, ciphertext, buf);
+
+    return try unpad(buf);
+}
+
+/// Pads the plaintext to a constant `PLAIN_LENGTH`, prefixed with its actual
+/// length, so the ciphertext never varies in size regardless of payload
+/// length.
+///
+/// Returns `error.InvalidLength` if the input is larger than
+/// `MAX_PAYLOAD_LENGTH`. I will, in the future, packetise long inputs so
+/// this case shan't be reachable.
+///
+/// `buf` must be at least `PLAIN_LENGTH` bytes; the returned slice is exactly
+/// that length.
+fn pad(plaintext: []const u8, buf: []u8) Error![]const u8 {
+    if (plaintext.len > MAX_PAYLOAD_LENGTH) return error.InvalidLength;
+    assert(buf.len >= PLAIN_LENGTH);
+
+    std.crypto.secureZero(u8, buf[0..PLAIN_LENGTH]);
+    std.mem.writeInt(u16, buf[0..2], @intCast(plaintext.len), .big);
+    @memcpy(buf[2..][0..plaintext.len], plaintext);
+
+    return buf[0..PLAIN_LENGTH];
+}
+
+/// Given some decrypted, padded plaintext in `buf`, recovers the unpadded
+/// version as a slice.
+fn unpad(buf: []const u8) Error![]const u8 {
+    if (buf.len < 2) return error.InvalidLength;
+
+    const len = std.mem.readInt(u16, buf[0..2], .big);
+    if (len > MAX_PAYLOAD_LENGTH or len > buf.len - 2) return error.InvalidLength;
+
+    return buf[2..][0..len];
 }
