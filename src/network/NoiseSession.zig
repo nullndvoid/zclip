@@ -114,8 +114,6 @@ pub fn init(
     };
 }
 
-pub const Result = struct {};
-
 /// Performs the Noise handshake over `rdr` and `writer`.
 ///
 /// If `remote_pubkey` is not null, then you are the initiator.
