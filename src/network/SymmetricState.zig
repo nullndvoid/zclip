@@ -20,6 +20,7 @@ const HASH_LENGTH = Sha256.digest_length;
 const DH_LENGTH = std.crypto.dh.X25519.shared_length;
 const HkdfSha256 = std.crypto.kdf.hkdf.HkdfSha256;
 const secureZero = std.crypto.secureZero;
+const Aes256Gcm = std.crypto.aead.aes_gcm.Aes256Gcm;
 
 const CipherState = @import("CipherState.zig");
 const NoiseSession = @import("NoiseSession.zig");
@@ -105,8 +106,8 @@ pub fn getHandshakeHash(self: *const SymmetricState) [HASH_LENGTH]u8 {
 /// `ciphertext_buf` must be of size NoiseSession.MESSAGE_LENGTH.
 ///
 /// This buffer backs the returned slice.
-pub fn encryptAndHash(self: *SymmetricState, plaintext: []const u8, ciphertext_buf: []u8) CipherState.CipherStateError![]const u8 {
-    const ciphertext = try self.cipher_state.encryptWithAd(
+pub fn encryptFramed(self: *SymmetricState, plaintext: []const u8, ciphertext_buf: []u8) CipherState.CipherStateError![]const u8 {
+    const ciphertext = try self.cipher_state.encryptWithAdFramed(
         &self.hash,
         plaintext,
         ciphertext_buf,
@@ -119,11 +120,27 @@ pub fn encryptAndHash(self: *SymmetricState, plaintext: []const u8, ciphertext_b
     return ciphertext;
 }
 
+pub fn encryptAndHash(self: *SymmetricState, plaintext: []const u8, out: []u8) CipherState.CipherStateError!usize {
+    const n = try self.cipher_state.aeadEncrypt(&self.hash, plaintext, out);
+
+    self.mixHash(out[0..n]);
+
+    return n;
+}
+
+pub fn decryptAndHash(self: *SymmetricState, ciphertext: []const u8, out: []u8) CipherState.CipherStateError!usize {
+    const n = try self.cipher_state.aeadDecrypt(&self.hash, ciphertext, out);
+
+    self.mixHash(ciphertext);
+
+    return n;
+}
+
 /// `plaintext_buf` must be at least `NoiseSession.MAX_PAYLOAD_LENGTH` bytes long.
 ///
 /// This buffer backs the returned slice.
-pub fn decryptAndHash(self: *SymmetricState, ciphertext: []const u8, plaintext_buf: []u8) CipherState.CipherStateError![]const u8 {
-    const plaintext = try self.cipher_state.decryptWithAd(&self.hash, ciphertext);
+pub fn decryptFramed(self: *SymmetricState, ciphertext: []const u8, plaintext_buf: []u8) CipherState.CipherStateError![]const u8 {
+    const plaintext = try self.cipher_state.decryptWithAdFramed(&self.hash, ciphertext);
 
     // Deviates from spec since our ciphertext is framed and includes the AEAD tag.
     // This is fine since we are using this code end-to-end.

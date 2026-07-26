@@ -25,6 +25,8 @@ const serde = @import("serde");
 const Network = @import("../Network.zig");
 const Repo = @import("../Repo.zig");
 const util = @import("../util.zig");
+const CipherState = @import("CipherState.zig");
+const HandshakeState = @import("HandshakeState.zig");
 
 const log = std.log.scoped(.NoiseSession);
 
@@ -36,31 +38,23 @@ pub const AEAD_TAG_LENGTH = 16;
 // 16 bytes AEAD tag and u16 prefix for padding gives the biggest possible plaintext.
 pub const MAX_PAYLOAD_LENGTH = MESSAGE_LENGTH - AEAD_TAG_LENGTH - 2;
 
-const PATTERN = "Noise_IK_25519_AESGCM_SHA256";
+/// Handshake messages are small but size generously.
+const HANDSHAKE_BUF_LEN = 256;
+
 io: Io,
 alloc: Allocator,
-opts: Opts,
-// read: noisey.CipherState,
-// write: noisey.CipherState,
+read: CipherState,
+write: CipherState,
 read_buf: []u8,
 write_buf: []u8,
 plain_buf: []u8,
 /// Stored for debug logging.
 peer_nick: []const u8,
 
-pub const Opts = struct {
-    initiator: bool = true,
-};
-
 /// Makes no attempt to tell peer about this.
 pub fn deinit(self: *NoiseSession) void {
-    if (self.read.k) |*k| {
-        std.crypto.secureZero(u8, k);
-    }
-
-    if (self.write.k) |*k| {
-        std.crypto.secureZero(u8, k);
-    }
+    self.read.deinit();
+    self.write.deinit();
 
     std.crypto.secureZero(u8, self.plain_buf);
 
@@ -85,101 +79,92 @@ pub fn init(
     peer_pubkey: ?[]const u8,
     repo: *Repo,
 ) !NoiseSession {
-    const read_buf = try alloc.alloc(u8, MAX_MESSAGE_LENGTH);
+    const initiator = peer_pubkey != null;
+    const s = HandshakeState.KeyPair{
+        .public = local_keypair.public_key,
+        .secret = local_keypair.private_key,
+    };
+    const rs: ?HandshakeState.Key = if (peer_pubkey) |pk| pk[0..32].* else null;
+
+    var handshake = try HandshakeState.init(initiator, &.{}, s, rs);
+
+    const read_buf = try alloc.alloc(u8, MESSAGE_LENGTH);
     errdefer alloc.free(read_buf);
 
-    const write_buf = try alloc.alloc(u8, MAX_MESSAGE_LENGTH);
+    const write_buf = try alloc.alloc(u8, MESSAGE_LENGTH);
     errdefer alloc.free(write_buf);
 
     const plain_buf = try alloc.alloc(u8, MAX_PAYLOAD_LENGTH);
     errdefer alloc.free(plain_buf);
 
-    var msg_buf: [256]u8 = undefined;
-    var payload_buf: [256]u8 = undefined;
+    var msg_buf: [HANDSHAKE_BUF_LEN]u8 = undefined;
+    var payload_buf: [HANDSHAKE_BUF_LEN]u8 = undefined;
 
-    // Lookup in DB according to handshake rs.
     var peer: ?Network.Peer = null;
-    var pubkey_b64: []const u8 = if (peer_pubkey) |pubkey|
-        try util.base64encode(pubkey, alloc)
-    else
-        &.{};
+    var pubkey_b64: []const u8 = &.{};
+    defer if (pubkey_b64.len != 0) alloc.free(pubkey_b64);
 
-    defer alloc.free(pubkey_b64);
+    if (initiator) {
+        pubkey_b64 = try util.base64encode(peer_pubkey.?, alloc);
 
-    if (opts.initiator) {
-        peer = repo.getPeerByPubkey(pubkey_b64, alloc) catch |err| {
-            switch (err) {
-                error.NotFound => {
-                    log.warn("This must be a bug. Attempted to connect to peer with pubkey {s} but was not found in the DB!", .{peer_pubkey.?});
-                    // Should probably close the connection. Will handle this upstream.
-                    return error.UnknownPeer;
-                },
-                else => {
-                    log.err("Could not check peer in db. Why: {t}", .{err});
-                    return err;
-                },
-            }
+        peer = repo.getPeerByPubkey(pubkey_b64, alloc) catch |err| switch (err) {
+            error.NotFound => {
+                log.warn("Attempted to connect to peer with pubkey {s} but it was not found in the DB!", .{pubkey_b64});
+                return error.UnknownPeer;
+            },
+            else => {
+                log.err("Could not check peer in db. Why: {t}", .{err});
+                return err;
+            },
         };
 
-        // e, es, s, ss
-        const len0 = try handshake.writeMessage(&.{}, &msg_buf);
+        // -> e, es, s, ss
+        const len0 = try handshake.writeMessage(io, &.{}, &msg_buf);
         try sendFrame(writer, msg_buf[0..len0]);
 
         // <- e, ee, se
         const m1 = try readFrame(rdr, &msg_buf);
         _ = try handshake.readMessage(m1, &payload_buf);
     } else {
+        // <- e, es, s, ss
         const m0 = try readFrame(rdr, &msg_buf);
-        _ = handshake.readMessage(m0, &payload_buf) catch |err| {
-            switch (err) {
-                error.AuthenticationFailed => {
-                    log.warn("Peer does not hold correct public key. Aborting.", .{});
-                    return error.PeerDoesNotHoldPubkey;
-                },
-                else => {
-                    return err;
-                },
-            }
+        _ = handshake.readMessage(m0, &payload_buf) catch |err| switch (err) {
+            error.DecryptionFailed => {
+                log.warn("Peer does not hold correct public key. Aborting.", .{});
+                return error.PeerDoesNotHoldPubkey;
+            },
+            else => return err,
         };
 
-        {
-            std.debug.assert(handshake.rs != null);
-            const peer_pubkey_bytes = handshake.rs.?;
-            pubkey_b64 = try util.base64encode(peer_pubkey_bytes, alloc);
+        std.debug.assert(handshake.rs != null);
+        pubkey_b64 = try util.base64encode(&handshake.rs.?, alloc);
 
-            peer = repo.getPeerByPubkey(pubkey_b64, alloc) catch |err| {
-                switch (err) {
-                    error.NotFound => {
-                        log.warn("Peer tried connecting with unknown pubkey {s}. Aborting.", .{pubkey_b64});
-                        // Should probably close the connection. Will handle this upstream.
-                        return error.UnknownPeer;
-                    },
-                    else => {
-                        log.err("Could not check peer in db. Why: {t}", .{err});
-                        return err;
-                    },
-                }
-            };
-        }
+        peer = repo.getPeerByPubkey(pubkey_b64, alloc) catch |err| switch (err) {
+            error.NotFound => {
+                log.warn("Peer tried connecting with unknown pubkey {s}. Aborting.", .{pubkey_b64});
+                return error.UnknownPeer;
+            },
+            else => {
+                log.err("Could not check peer in db. Why: {t}", .{err});
+                return err;
+            },
+        };
 
-        const l1 = try handshake.writeMessage(&.{}, &msg_buf);
+        // -> e, ee, se
+        const l1 = try handshake.writeMessage(io, &.{}, &msg_buf);
         try sendFrame(writer, msg_buf[0..l1]);
     }
 
-    std.debug.assert(handshake.isComplete());
-    var states = handshake.split();
-
-    states.@"0".cipher.pad = true;
-    states.@"1".cipher.pad = true;
-
     std.debug.assert(peer != null);
+    std.debug.assert(handshake.done());
+
+    const split = handshake.split();
 
     return .{
         .io = io,
         .alloc = alloc,
-        .opts = opts,
-        .read = if (opts.initiator) states.@"1" else states.@"0",
-        .write = if (opts.initiator) states.@"0" else states.@"1",
+        .read = if (initiator) split.@"1" else split.@"0",
+        .write = if (initiator) split.@"0" else split.@"1",
         .read_buf = read_buf,
         .write_buf = write_buf,
         .plain_buf = plain_buf,
@@ -188,7 +173,7 @@ pub fn init(
 }
 
 fn sendFrame(writer: *Io.Writer, data: []const u8) !void {
-    if (data.len > noisey.MAX_MESSAGE_LENGTH)
+    if (data.len > MESSAGE_LENGTH)
         @panic("sendFrame called with too large a message! This is a bug.");
 
     try writer.writeInt(u16, @intCast(data.len), .big);
@@ -206,10 +191,8 @@ fn readFrame(rdr: *Io.Reader, buf: []u8) ![]const u8 {
 }
 
 pub fn send(self: *NoiseSession, writer: *Io.Writer, data: []const u8) !void {
-    const written = try self.write.encryptWithAd("", data, self.write_buf);
-    std.debug.assert(written == noisey.MAX_MESSAGE_LENGTH);
-
-    const bytes = self.write_buf[0..written];
+    const bytes = try self.write.encryptWithAdFramed("", data, self.write_buf);
+    std.debug.assert(bytes.len == MESSAGE_LENGTH);
 
     try sendFrame(writer, bytes);
 }
@@ -218,19 +201,20 @@ pub fn send(self: *NoiseSession, writer: *Io.Writer, data: []const u8) !void {
 pub fn recv(self: *NoiseSession, rdr: *Io.Reader) ![]const u8 {
     const frame = try readFrame(rdr, self.read_buf);
 
-    const got = try self.read.decryptWithAd("", frame, self.plain_buf);
+    const got = try self.read.decryptWithAdFramed("", frame);
+    @memcpy(self.plain_buf[0..got.len], got);
 
-    return self.plain_buf[0..got];
+    return self.plain_buf[0..got.len];
 }
 
 /// Sends some data, messagepack encoded.
 pub fn sendT(self: *NoiseSession, writer: *Io.Writer, alloc: Allocator, that: anytype) !void {
     const data = try serde.msgpack.toSlice(alloc, that);
+    defer alloc.free(data);
     try self.send(writer, data);
 }
 
-/// Recieves some data, messagepack encoded. Performs no validation on the recieved data.
-/// Perhaps I can write .validate methods on my wire types.
+/// Receives some data, messagepack encoded. Performs no validation on the received data.
 pub fn recvT(self: *NoiseSession, comptime T: type, rdr: *Io.Reader, alloc: Allocator) !T {
     const bytes = try self.recv(rdr);
 
