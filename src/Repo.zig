@@ -149,13 +149,17 @@ pub fn getPeers(repo: *Repo, alloc: Allocator) ![]const Network.Peer {
     return try out.toOwnedSlice(alloc);
 }
 
+/// Callers should probably use an arena or manually free all returned slices
+/// when done.
 fn toNetworkPeer(peer: models.NetworkPeer, alloc: Allocator) !Network.Peer {
     const pubkey = try util.base64decode(peer.pubkey.data, alloc);
     defer alloc.free(pubkey);
 
     var host: ?Network.Host = null;
     if (peer.addr) |addr| {
-        host = try Network.parseHostname(addr.data);
+        const duped_addr = try alloc.dupe(u8, addr.data);
+        errdefer alloc.free(duped_addr);
+        host = try Network.parseHostname(duped_addr);
     }
 
     const duped_nickname = try alloc.dupe(u8, peer.nickname.data);
