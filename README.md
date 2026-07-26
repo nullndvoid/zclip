@@ -17,7 +17,6 @@ features I am less worried about.
 
 # Dependencies
 
-* openssl
 * wl-clipboard on Wayland for unit tests
 
 # Notes
