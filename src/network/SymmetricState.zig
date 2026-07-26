@@ -75,6 +75,7 @@ pub fn mixKey(self: *SymmetricState, ikm: [DH_LENGTH]u8) void {
     // HASH_LENGTH is 32 so no need to truncate.
     const temp_key = outputs[1];
 
+    self.cipher_state.deinit();
     self.cipher_state = .init(temp_key);
 }
 
@@ -96,28 +97,12 @@ pub fn mixKeyAndHash(self: *SymmetricState, ikm: [DH_LENGTH]u8) void {
 
     self.mixHash(&temp_hash);
 
+    self.cipher_state.deinit();
     self.cipher_state = .init(temp_key);
 }
 
 pub fn getHandshakeHash(self: *const SymmetricState) [HASH_LENGTH]u8 {
     return self.hash;
-}
-
-/// `ciphertext_buf` must be of size NoiseSession.MESSAGE_LENGTH.
-///
-/// This buffer backs the returned slice.
-pub fn encryptFramed(self: *SymmetricState, plaintext: []const u8, ciphertext_buf: []u8) CipherState.Error![]const u8 {
-    const ciphertext = try self.cipher_state.encryptWithAdFramed(
-        &self.hash,
-        plaintext,
-        ciphertext_buf,
-    );
-
-    // Deviates from spec since our ciphertext is framed and includes the AEAD tag.
-    // This is fine since we are using this code end-to-end.
-    self.mixHash(ciphertext);
-
-    return ciphertext;
 }
 
 pub fn encryptAndHash(self: *SymmetricState, plaintext: []const u8, out: []u8) CipherState.Error!usize {
@@ -134,21 +119,6 @@ pub fn decryptAndHash(self: *SymmetricState, ciphertext: []const u8, out: []u8) 
     self.mixHash(ciphertext);
 
     return n;
-}
-
-/// `plaintext_buf` must be at least `NoiseSession.MAX_PAYLOAD_LENGTH` bytes long.
-///
-/// This buffer backs the returned slice.
-pub fn decryptFramed(self: *SymmetricState, ciphertext: []const u8, plaintext_buf: []u8) CipherState.Error![]const u8 {
-    const plaintext = try self.cipher_state.decryptWithAdFramed(&self.hash, ciphertext);
-
-    // Deviates from spec since our ciphertext is framed and includes the AEAD tag.
-    // This is fine since we are using this code end-to-end.
-    self.mixHash(ciphertext);
-
-    @memcpy(plaintext_buf[0..plaintext.len], plaintext);
-
-    return plaintext_buf[0..plaintext.len];
 }
 
 /// Returns a pair of `CipherState`'s for encryption of transport messages.
