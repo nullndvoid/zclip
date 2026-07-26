@@ -313,22 +313,34 @@ test "full handshake" {
     const initiator_kp = KeyPair.generate(io);
     const responder_kp = KeyPair.generate(io);
 
-    var initiator = try init(true, "", initiator_kp, responder_kp.public);
-    var responder = try init(false, "", responder_kp, null);
+    const prologue = "ZCLIP!";
+
+    var initiator = try init(true, prologue, initiator_kp, responder_kp.public);
+    var responder = try init(false, prologue, responder_kp, null);
 
     // Should be sufficient.
     var initiator_msg_buf: [256]u8 = undefined;
     var responder_msg_buf: [256]u8 = undefined;
     var payload_buf: [256]u8 = undefined;
 
-    const m0_wrote = try initiator.writeMessage(io, &.{}, &initiator_msg_buf);
+    {
+        const payload = "hello!";
+        const m0_wrote = try initiator.writeMessage(io, payload, &initiator_msg_buf);
 
-    // Now responder can read.
-    _ = try responder.readMessage(initiator_msg_buf[0..m0_wrote], &payload_buf);
+        // Now responder can read.
+        const payload_length = try responder.readMessage(initiator_msg_buf[0..m0_wrote], &payload_buf);
 
-    const m1_wrote = try responder.writeMessage(io, "", &responder_msg_buf);
+        try std.testing.expectEqualStrings(payload, payload_buf[0..payload_length]);
+    }
 
-    _ = try initiator.readMessage(responder_msg_buf[0..m1_wrote], &payload_buf);
+    {
+        const payload = "good evening!";
+        const m1_wrote = try responder.writeMessage(io, payload, &responder_msg_buf);
+
+        const payload_length = try initiator.readMessage(responder_msg_buf[0..m1_wrote], &payload_buf);
+
+        try std.testing.expectEqualStrings(payload, payload_buf[0..payload_length]);
+    }
 
     // Now we should be done. We can just check the shared keys.
     try std.testing.expect(initiator.done());
