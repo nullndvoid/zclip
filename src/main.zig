@@ -222,8 +222,13 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
                             std.process.exit(1);
                         };
 
+                        const host: ?Network.Host = if (add.host) |host_str|
+                            try Network.parseHostname(host_str)
+                        else
+                            null;
+
                         try client.addPeer(.{
-                            .addr = add.addr,
+                            .host = host,
                             .pubkey = pubkey,
                             .nickname = add.name,
                         }, add.force);
@@ -245,8 +250,8 @@ fn printPeers(peers: []const Network.Peer, writer: *Io.Writer) !void {
     for (peers) |p| {
         const pubkey = util.encodeKey(p.pubkey);
 
-        if (p.addr) |addr| {
-            try writer.print("ID {d}: {s} ({s}) {s}\n", .{ p.id, p.nickname, &pubkey, addr });
+        if (p.host) |addr| {
+            try writer.print("ID {d}: {s} ({s}) {f}\n", .{ p.id, p.nickname, &pubkey, addr });
         } else try writer.print("ID {d}: {s} ({s})\n", .{ p.id, p.nickname, &pubkey });
     }
 

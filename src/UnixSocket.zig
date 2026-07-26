@@ -235,8 +235,18 @@ fn handleConnectionRw(self: *UnixSocket, rdr: *Io.Reader, writer: *Io.Writer) !v
                 // The DB stores pubkeys base64 encoded.
                 const pubkey_b64 = util.encodeKey(peer.pubkey);
 
+                var addr: []u8 = &.{};
+                // This is sound because 0 length free is a no-op.
+                defer self.alloc.free(addr);
+
+                if (peer.host) |host| {
+                    addr = try std.fmt.allocPrint(self.alloc, "{f}", .{host});
+                }
+
+                log.debug("Converted host to {s}", .{addr});
+
                 self.repo.addPeer(.{
-                    .addr = peer.addr,
+                    .addr = if (peer.host) |_| addr else null,
                     .nickname = peer.nickname,
                     .pubkey = &pubkey_b64,
                 }, force) catch |err| {

@@ -24,7 +24,7 @@ pub const NetworkPeer = struct {
     /// A nickname for the remote peer.
     nickname: Text,
 
-    /// The IP address of the remote peer. Null if the remote should only
+    /// The IP address or hostname of the remote peer. Null if the remote should only
     /// connect to this one.
     addr: ?Text,
 

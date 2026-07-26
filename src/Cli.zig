@@ -18,10 +18,9 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
+const argv = @import("argv");
 const build_options = @import("options");
 const clip = @import("clipboard");
-
-const argv = @import("argv");
 
 const Network = @import("Network.zig");
 
@@ -51,18 +50,18 @@ pub const PeerOpts = struct {
         pub const PeerAdd = struct {
             name: []const u8,
             pubkey: []const u8,
-            addr: ?[]const u8,
+            host: ?[]const u8,
 
             force: bool = false,
 
             pub const positionals = .{
                 .name,
                 .pubkey,
-                .addr,
+                .host,
             };
 
             pub const help = .{
-                .usage = "peer add nickname publickey (optional IP address)",
+                .usage = "peer add nickname publickey (optional hostname)",
             };
         };
     },
@@ -124,11 +123,6 @@ pub const IpAddress = struct {
     pub fn parse(ctx: *argv.Parse.ValueCtx) !IpAddress {
         const arg = ctx.takeArg() orelse return error.MissingValue;
 
-        var addr = try Io.net.IpAddress.parseLiteral(arg);
-        if (addr.getPort() == 0) {
-            addr.setPort(Network.DEFAULT_NET_PORT);
-        }
-
-        return .{ .addr = addr };
+        return .{ .addr = try Network.parseIp(arg) };
     }
 };

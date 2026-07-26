@@ -153,14 +153,9 @@ fn toNetworkPeer(peer: models.NetworkPeer, alloc: Allocator) !Network.Peer {
     const pubkey = try util.base64decode(peer.pubkey.data, alloc);
     defer alloc.free(pubkey);
 
-    var duped_addr: ?[]const u8 = null;
-
+    var host: ?Network.Host = null;
     if (peer.addr) |addr| {
-        duped_addr = try alloc.dupe(u8, addr.data);
-    }
-
-    errdefer {
-        if (duped_addr) |addr| alloc.free(addr);
+        host = try Network.parseHostname(addr.data);
     }
 
     const duped_nickname = try alloc.dupe(u8, peer.nickname.data);
@@ -169,7 +164,7 @@ fn toNetworkPeer(peer: models.NetworkPeer, alloc: Allocator) !Network.Peer {
     std.debug.assert(pubkey.len == 32);
 
     return .{
-        .addr = duped_addr,
+        .host = host,
         .nickname = duped_nickname,
         .id = peer.id,
         .pubkey = pubkey[0..32].*,

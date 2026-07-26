@@ -15,11 +15,8 @@
 
 const std = @import("std");
 const Io = std.Io;
-const Arena = std.heap.ArenaAllocator;
 const Allocator = std.mem.Allocator;
-const Box = std.crypto.nacl.Box;
-const Ed25519 = std.crypto.sign.Ed25519;
-const b64 = std.base64.standard;
+const Arena = std.heap.ArenaAllocator;
 
 const Serde = @import("serde");
 
@@ -62,6 +59,20 @@ pub const Config = struct {
     peers: []Peer = &.{},
 };
 
+pub const Host = struct {
+    name: Io.net.HostName,
+    port: u16,
+
+    pub fn format(
+        self: Host,
+        writer: *std.Io.Writer,
+    ) Io.Writer.Error!void {
+        try writer.print("{s}:{d}", .{ self.name.bytes, self.port });
+        try writer.flush();
+    }
+};
+
+/// Parses an IP from a string, setting the port to default if not given.
 pub fn parseIp(ip: []const u8) !Io.net.IpAddress {
     var addr = try Io.net.IpAddress.parseLiteral(ip);
     if (addr.getPort() == 0) {
@@ -69,6 +80,28 @@ pub fn parseIp(ip: []const u8) !Io.net.IpAddress {
     }
 
     return addr;
+}
+
+/// Parses an IP or hostname and optional port number from a string.
+pub fn parseHostname(ip: []const u8) !Host {
+    const colon = std.mem.indexOfScalar(u8, ip, ':');
+    var rest = ip;
+    const port = blk: {
+        if (colon) |idx| {
+            if (idx == ip.len - 1) return error.InvalidPort;
+            rest = ip[0..idx];
+            break :blk try std.fmt.parseInt(u16, ip[idx + 1 ..], 10);
+        } else {
+            break :blk DEFAULT_NET_PORT;
+        }
+    };
+
+    const hostname = try Io.net.HostName.init(rest);
+
+    return .{
+        .name = hostname,
+        .port = port,
+    };
 }
 
 /// Returns a list of all peers that this daemon should attempt to connect to.
@@ -79,7 +112,7 @@ pub fn getConnectable(ident: Identity, peers: []const Peer, alloc: Allocator) ![
     var out = std.ArrayList(Peer).empty;
 
     for (peers) |p| {
-        if (p.addr != null and std.mem.order(u8, &ident.public_key, &p.pubkey) == .gt)
+        if (p.host != null and std.mem.order(u8, &ident.public_key, &p.pubkey) == .gt)
             try out.append(alloc, p);
     }
 
@@ -142,9 +175,13 @@ const Backoff = struct {
     }
 };
 
-fn connectWithBackoff(self: *Network, addr: Io.net.IpAddress, peer: Peer, backoff: *Backoff) error{Canceled}!Io.net.Stream {
+fn connectWithBackoff(self: *Network, host: Host, peer: Peer, backoff: *Backoff) error{Canceled}!Io.net.Stream {
     while (true) {
-        return addr.connect(self.io, .{ .mode = .stream }) catch |err| switch (err) {
+        return host.name.connect(
+            self.io,
+            host.port,
+            .{ .mode = .stream, .protocol = .tcp },
+        ) catch |err| switch (err) {
             error.Canceled => return error.Canceled,
             else => {
                 if (!backoff.failed) {
@@ -165,16 +202,10 @@ fn connectWithBackoff(self: *Network, addr: Io.net.IpAddress, peer: Peer, backof
 /// connection until it closes. Only fails on cancellation; anything fatal for
 /// this one peer is logged and gives up quietly.
 fn connectToPeer(self: *Network, peer: Peer) error{Canceled}!void {
-    var addr = Io.net.IpAddress.parseLiteral(peer.addr.?) catch |err| {
-        log.err("Invalid address `{s}` for peer `{s}`: {t}. Not connecting.", .{ peer.addr.?, peer.nickname, err });
-        return;
-    };
-    if (addr.getPort() == 0) addr.setPort(DEFAULT_NET_PORT);
-
     var backoff = Backoff{};
 
     while (true) {
-        const stream = try self.connectWithBackoff(addr, peer, &backoff);
+        const stream = try self.connectWithBackoff(peer.host.?, peer, &backoff);
         var conn_arena = Arena.init(self.alloc);
         defer conn_arena.deinit();
 
@@ -364,9 +395,9 @@ pub const Peer = struct {
     /// A nickname for the remote peer.
     nickname: []const u8,
 
-    /// The IP address of the remote peer. Null if the remote should only
-    /// connect to this one.
-    addr: ?[]const u8,
+    /// The IP address or hostname of the remote peer.
+    /// Null if the remote should only connect to this one.
+    host: ?Host,
 
     /// A (locally) unique ID for the peer.
     /// Globally unique IDs could be generated using a hash of one's own public
