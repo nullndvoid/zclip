@@ -18,6 +18,7 @@ const Allocator = std.mem.Allocator;
 pub fn base64encode(bytes: []const u8, alloc: Allocator) ![]const u8 {
     const len = std.base64.standard.Encoder.calcSize(bytes.len);
     const buf = try alloc.alloc(u8, len);
+    errdefer alloc.free(buf);
 
     const out = std.base64.standard.Encoder.encode(buf, bytes);
 
@@ -33,4 +34,32 @@ pub fn base64decode(bytes: []const u8, alloc: Allocator) ![]const u8 {
     try std.base64.standard.Decoder.decode(buf, bytes);
 
     return buf;
+}
+
+/// Non-allocating key encode to base64.
+pub fn encodeKey(key: [32]u8) [44]u8 {
+    var buf: [44]u8 = undefined;
+
+    const out = std.base64.standard.Encoder.encode(&buf, &key);
+    std.debug.assert(out.len == 44);
+
+    return buf;
+}
+
+/// Non-allocating key decode from base64.
+pub fn decodeKey(b64: []const u8) std.base64.Error![32]u8 {
+    var buf: [32]u8 = undefined;
+    try std.base64.standard.Decoder.decode(&buf, b64);
+
+    return buf;
+}
+
+test "encode and decode key" {
+    const key: [32]u8 = undefined;
+
+    const encoded = encodeKey(key);
+
+    const decoded = try decodeKey(&encoded);
+
+    try std.testing.expectEqualSlices(u8, &key, &decoded);
 }

@@ -197,10 +197,9 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             defer client.deinit();
 
             const pubkey_bytes = try client.getPubkey();
-            const pubkey = try util.base64encode(&pubkey_bytes, gpa.allocator());
-            defer gpa.allocator().free(pubkey);
+            const pubkey = util.encodeKey(pubkey_bytes);
 
-            try stdout_writer.writeAll(pubkey);
+            try stdout_writer.writeAll(&pubkey);
             try stdout_writer.flush();
         },
         .peer => |peer| {
@@ -213,27 +212,26 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
 
                 switch (act) {
                     .add => |add| {
-                        const pubkey = util.base64decode(add.pubkey, gpa.allocator()) catch {
+                        if (add.pubkey.len != 44) {
+                            log.err("Public key base64 has invalid length!", .{});
+                            std.process.exit(1);
+                        }
+
+                        const pubkey = util.decodeKey(add.pubkey[0..add.pubkey.len]) catch {
                             log.err("Public key should be base64 encoded!", .{});
                             std.process.exit(1);
                         };
 
-                        defer gpa.allocator().free(pubkey);
-                        if (pubkey.len != 32) {
-                            log.err("Public key should decode to 32 bytes! Got {d}", .{pubkey.len});
-                            std.process.exit(1);
-                        }
-
                         try client.addPeer(.{
                             .addr = add.addr,
-                            .pubkey = pubkey[0..32].*,
+                            .pubkey = pubkey,
                             .nickname = add.name,
                         }, add.force);
                     },
                     .list => {
                         const peers = try client.listPeers();
 
-                        try printPeers(peers, gpa.allocator(), stdout_writer);
+                        try printPeers(peers, stdout_writer);
                     },
                 }
             } else {
@@ -243,13 +241,13 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     }
 }
 
-fn printPeers(peers: []const Network.Peer, alloc: Allocator, writer: *Io.Writer) !void {
+fn printPeers(peers: []const Network.Peer, writer: *Io.Writer) !void {
     for (peers) |p| {
-        const pubkey = try util.base64encode(&p.pubkey, alloc);
-        defer alloc.free(pubkey);
+        const pubkey = util.encodeKey(p.pubkey);
+
         if (p.addr) |addr| {
-            try writer.print("ID {d}: {s} ({s}) {s}\n", .{ p.id, p.nickname, p.pubkey, addr });
-        } else try writer.print("ID {d}: {s} ({s})\n", .{ p.id, p.nickname, pubkey });
+            try writer.print("ID {d}: {s} ({s}) {s}\n", .{ p.id, p.nickname, &pubkey, addr });
+        } else try writer.print("ID {d}: {s} ({s})\n", .{ p.id, p.nickname, &pubkey });
     }
 
     try writer.writeAll("\n");

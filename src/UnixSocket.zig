@@ -20,7 +20,6 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 
 const serde = @import("serde");
 const zclip = @import("clipboard");
-
 const Clip = zclip.Clip;
 const Clipboard = zclip.Clipboard;
 
@@ -234,16 +233,12 @@ fn handleConnectionRw(self: *UnixSocket, rdr: *Io.Reader, writer: *Io.Writer) !v
                 var cmd: Command = undefined;
 
                 // The DB stores pubkeys base64 encoded.
-                const pubkey_b64 = util.base64encode(&peer.pubkey, arena.allocator()) catch |err| {
-                    cmd = .{ .DaemonError = @errorName(err) };
-
-                    break :blk cmd;
-                };
+                const pubkey_b64 = util.encodeKey(peer.pubkey);
 
                 self.repo.addPeer(.{
                     .addr = peer.addr,
                     .nickname = peer.nickname,
-                    .pubkey = pubkey_b64,
+                    .pubkey = &pubkey_b64,
                 }, force) catch |err| {
                     cmd = .{ .DaemonError = @errorName(err) };
 

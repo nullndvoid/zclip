@@ -21,6 +21,8 @@ const builtin = @import("builtin");
 
 const known = @import("known-folders");
 
+const util = @import("../util.zig");
+
 const log = std.log.scoped(.Identity);
 
 const Identity = @This();
@@ -124,13 +126,9 @@ pub fn getOrInit(io: Io, alloc: Allocator, data_dir: []const u8) !Identity {
             error.FileNotFound => {
                 const ident = try writeIdentity(io, data_dir);
 
-                const size = std.base64.standard.Encoder.calcSize(ident.public_key.len);
-                const buf = try alloc.alloc(u8, size);
-                defer alloc.free(buf);
+                const b64 = util.encodeKey(ident.public_key);
 
-                const b64 = std.base64.standard.Encoder.encode(buf, &ident.public_key);
-
-                log.info("Created new identity keypair. Public key is {s}", .{b64});
+                log.info("Created new identity keypair. Public key is {s}", .{&b64});
                 log.info("On subsequent runs, you may call `zclip ident` to fetch the public key", .{});
 
                 return ident;

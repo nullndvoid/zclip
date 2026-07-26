@@ -28,6 +28,7 @@ pub const Identity = @import("network/Identity.zig");
 const NoiseSession = @import("network/NoiseSession.zig");
 const Packet = @import("network/Packet.zig");
 const Repo = @import("Repo.zig");
+const util = @import("util.zig");
 
 const log = std.log.scoped(.net);
 
@@ -202,9 +203,7 @@ fn connectToPeer(self: *Network, peer: Peer) error{Canceled}!void {
                 // the maximum interval.
                 if (!backoff.failed) {
                     log.warn("Peer `{s}` does not have this machines public key. Copy the following line to your peers config. Will retry every {d}s", .{ peer.nickname, Backoff.maxDelaySeconds() });
-
-                    var buf: [b64.Encoder.calcSize(self.identity.public_key.len)]u8 = undefined;
-                    const b64_pk = b64.Encoder.encode(&buf, &self.identity.public_key);
+                    const b64_pk = util.encodeKey(self.identity.public_key);
                     log.info("pubkey = {s}", .{b64_pk});
                 } else {
                     log.debug("Peer `{s}` still does not have this machines public key. Attempt {d}. Retrying soon...", .{ peer.nickname, backoff.attempts });

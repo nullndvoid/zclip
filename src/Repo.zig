@@ -151,7 +151,7 @@ pub fn getPeers(repo: *Repo, alloc: Allocator) ![]const Network.Peer {
 
 fn toNetworkPeer(peer: models.NetworkPeer, alloc: Allocator) !Network.Peer {
     const pubkey = try util.base64decode(peer.pubkey.data, alloc);
-    errdefer alloc.free(pubkey);
+    defer alloc.free(pubkey);
 
     var duped_addr: ?[]const u8 = null;
 
