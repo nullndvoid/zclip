@@ -19,51 +19,55 @@ const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
+const testing = std.testing;
 
 const serde = @import("serde");
 
 const Network = @import("../Network.zig");
-const Repo = @import("../Repo.zig");
-const util = @import("../util.zig");
 const CipherState = @import("CipherState.zig");
 const Error = CipherState.Error;
 pub const AEAD_TAG_LENGTH = CipherState.TAG_LENGTH;
 const HandshakeState = @import("HandshakeState.zig");
+const Packet = @import("Packet.zig");
 
 const log = std.log.scoped(.NoiseSession);
 
 const NoiseSession = @This();
 
-/// Encrypted and framed messages are always this large.
-pub const MESSAGE_LENGTH = 65535;
-/// 2 byte length prefix + padded payload.
-const PLAIN_LENGTH = MESSAGE_LENGTH - AEAD_TAG_LENGTH;
-// 16 bytes AEAD tag and u16 prefix for padding gives the biggest possible plaintext.
-pub const MAX_PAYLOAD_LENGTH = PLAIN_LENGTH - 2;
+/// Overhead per frame: the AEAD tag, plus a u16 length prefix used to
+/// recover the true payload length after padding.
+const FRAME_OVERHEAD = AEAD_TAG_LENGTH + 2;
 
 /// Handshake messages are small but size generously.
 const HANDSHAKE_BUF_LEN = 256;
 
+pub const Options = struct {
+    /// Every encrypted transport message is padded and encrypted to exactly
+    /// this many bytes, so ciphertext size never reveals payload length.
+    /// Smaller values shrink memory and bandwidth, at the cost of a smaller
+    /// `maxPayloadLength`, which is `frame_length`, less 18 bytes.
+    frame_length: u16 = 65535,
+};
+
 io: Io,
+opts: Options,
 alloc: Allocator,
 read: CipherState,
 write: CipherState,
 read_buf: []u8,
 write_buf: []u8,
-plain_buf: []u8,
-/// Stored for debug logging.
-peer_nick: []const u8,
+/// The peers public key.
+peer_pubkey: [32]u8,
 
 /// Makes no attempt to tell peer about this.
 pub fn deinit(self: *NoiseSession) void {
     self.read.deinit();
     self.write.deinit();
 
-    std.crypto.secureZero(u8, self.plain_buf);
+    std.crypto.secureZero(u8, self.read_buf);
 
     self.alloc.free(self.read_buf);
     self.alloc.free(self.write_buf);
-    self.alloc.free(self.plain_buf);
 }
 
 /// Initiator if `peer_pubkey` is not null.
@@ -73,94 +77,30 @@ pub fn deinit(self: *NoiseSession) void {
 /// * AEAD is AES256-GCM
 /// * DH is x25519
 /// * Hash function is SHA-256.
+///
+/// ## Security Notes
+///
+/// Ensure that the validity of the peers pubkey is checked if you did not
+/// initiate the session.
 pub fn init(
     io: Io,
     alloc: Allocator,
     rdr: *Io.Reader,
     writer: *Io.Writer,
-    local_keypair: Network.Identity,
-    peer_pubkey: ?[]const u8,
-    repo: *Repo,
+    identity: Network.Identity,
+    peer_pubkey: ?[32]u8,
+    opts: Options,
 ) !NoiseSession {
     const initiator = peer_pubkey != null;
-    const s = HandshakeState.KeyPair{
-        .public = local_keypair.public_key,
-        .secret = local_keypair.private_key,
-    };
-    const rs: ?HandshakeState.Key = if (peer_pubkey) |pk| pk[0..32].* else null;
 
-    var handshake = try HandshakeState.init(initiator, &.{}, s, rs);
+    const split =
+        try handshake(io, rdr, writer, identity, peer_pubkey);
 
-    const read_buf = try alloc.alloc(u8, MESSAGE_LENGTH);
+    const read_buf = try alloc.alloc(u8, opts.frame_length);
     errdefer alloc.free(read_buf);
 
-    const write_buf = try alloc.alloc(u8, MESSAGE_LENGTH);
+    const write_buf = try alloc.alloc(u8, opts.frame_length);
     errdefer alloc.free(write_buf);
-
-    const plain_buf = try alloc.alloc(u8, MAX_PAYLOAD_LENGTH);
-    errdefer alloc.free(plain_buf);
-
-    var msg_buf: [HANDSHAKE_BUF_LEN]u8 = undefined;
-    var payload_buf: [HANDSHAKE_BUF_LEN]u8 = undefined;
-
-    var peer: ?Network.Peer = null;
-    var pubkey_b64: [44]u8 = undefined;
-
-    if (initiator) {
-        pubkey_b64 = util.encodeKey(peer_pubkey.?[0..32].*);
-
-        peer = repo.getPeerByPubkey(&pubkey_b64, alloc) catch |err| switch (err) {
-            error.NotFound => {
-                log.warn("Attempted to connect to peer with pubkey {s} but it was not found in the DB!", .{pubkey_b64});
-                return error.UnknownPeer;
-            },
-            else => {
-                log.err("Could not check peer in db. Why: {t}", .{err});
-                return err;
-            },
-        };
-
-        // -> e, es, s, ss
-        const len0 = try handshake.writeMessage(io, &.{}, &msg_buf);
-        try sendFrame(writer, msg_buf[0..len0]);
-
-        // <- e, ee, se
-        const m1 = try readFrame(rdr, &msg_buf);
-        _ = try handshake.readMessage(m1, &payload_buf);
-    } else {
-        // <- e, es, s, ss
-        const m0 = try readFrame(rdr, &msg_buf);
-        _ = handshake.readMessage(m0, &payload_buf) catch |err| switch (err) {
-            error.DecryptionFailed => {
-                log.warn("Peer does not hold correct public key. Aborting.", .{});
-                return error.PeerDoesNotHoldPubkey;
-            },
-            else => return err,
-        };
-
-        std.debug.assert(handshake.rs != null);
-        pubkey_b64 = util.encodeKey(handshake.rs.?);
-
-        peer = repo.getPeerByPubkey(&pubkey_b64, alloc) catch |err| switch (err) {
-            error.NotFound => {
-                log.warn("Peer tried connecting with unknown pubkey {s}. Aborting.", .{pubkey_b64});
-                return error.UnknownPeer;
-            },
-            else => {
-                log.err("Could not check peer in db. Why: {t}", .{err});
-                return err;
-            },
-        };
-
-        // -> e, ee, se
-        const l1 = try handshake.writeMessage(io, &.{}, &msg_buf);
-        try sendFrame(writer, msg_buf[0..l1]);
-    }
-
-    std.debug.assert(peer != null);
-    std.debug.assert(handshake.done());
-
-    const split = handshake.split();
 
     return .{
         .io = io,
@@ -169,14 +109,82 @@ pub fn init(
         .write = if (initiator) split.@"0" else split.@"1",
         .read_buf = read_buf,
         .write_buf = write_buf,
-        .plain_buf = plain_buf,
-        .peer_nick = peer.?.nickname,
+        .opts = opts,
+        .peer_pubkey = split.@"2",
     };
 }
 
+pub const Result = struct {};
+
+/// Performs the Noise handshake over `rdr` and `writer`.
+///
+/// If `remote_pubkey` is not null, then you are the initiator.
+///
+/// Returns a triple of two `CipherState`'s, and the remote public key.
+///
+/// If initiator, first is writes, second reads.
+/// If responder, the converse applies.
+///
+/// ## Security Notes
+///
+/// Take care to check the public key of the remote peer exists in DB
+/// if this succeeds.
+///
+fn handshake(
+    io: Io,
+    rdr: *Io.Reader,
+    writer: *Io.Writer,
+    identity: Network.Identity,
+    remote_pubkey: ?[32]u8,
+) !struct { CipherState, CipherState, [32]u8 } {
+    const initiator = remote_pubkey != null;
+    const s = HandshakeState.KeyPair{
+        .public = identity.public_key,
+        .secret = identity.private_key,
+    };
+
+    var shaker = try HandshakeState.init(
+        initiator,
+        &.{},
+        s,
+        remote_pubkey,
+    );
+
+    var msg_buf: [HANDSHAKE_BUF_LEN]u8 = undefined;
+    var payload_buf: [HANDSHAKE_BUF_LEN]u8 = undefined;
+
+    if (initiator) {
+        const len0 = try shaker.writeMessage(io, &.{}, &msg_buf);
+        try sendFrame(writer, msg_buf[0..len0]);
+
+        const m1 = try readFrame(rdr, &msg_buf);
+        _ = try shaker.readMessage(m1, &payload_buf);
+    } else {
+        const m0 = try readFrame(rdr, &msg_buf);
+        _ = shaker.readMessage(m0, &payload_buf) catch |err| switch (err) {
+            error.DecryptionFailed => {
+                log.warn("Peer does not hold correct public key. Aborting.", .{});
+                return error.PeerDoesNotHoldPubkey;
+            },
+            else => return err,
+        };
+
+        std.debug.assert(shaker.rs != null);
+
+        const l1 = try shaker.writeMessage(io, &.{}, &msg_buf);
+        try sendFrame(writer, msg_buf[0..l1]);
+    }
+
+    std.debug.assert(shaker.done());
+
+    const first, const second = shaker.split();
+    const peer_publickey = shaker.rs.?;
+
+    return .{ first, second, peer_publickey };
+}
+
 fn sendFrame(writer: *Io.Writer, data: []const u8) !void {
-    if (data.len > MESSAGE_LENGTH)
-        @panic("sendFrame called with too large a message! This is a bug.");
+    assert(data.len <= std.math.maxInt(u16));
 
     try writer.writeInt(u16, @intCast(data.len), .big);
     try writer.writeAll(data);
@@ -192,9 +200,13 @@ fn readFrame(rdr: *Io.Reader, buf: []u8) ![]const u8 {
     return buf[0..length];
 }
 
+/// The largest payload `send` will accept for this session's `frame_length`.
+pub fn maxPayloadLength(self: *const NoiseSession) u16 {
+    return self.opts.frame_length - FRAME_OVERHEAD;
+}
+
 pub fn send(self: *NoiseSession, writer: *Io.Writer, data: []const u8) !void {
     const bytes = try encryptWithAdFramed(&self.write, "", data, self.write_buf);
-    std.debug.assert(bytes.len == MESSAGE_LENGTH);
 
     try sendFrame(writer, bytes);
 }
@@ -203,10 +215,9 @@ pub fn send(self: *NoiseSession, writer: *Io.Writer, data: []const u8) !void {
 pub fn recv(self: *NoiseSession, rdr: *Io.Reader) ![]const u8 {
     const frame = try readFrame(rdr, self.read_buf);
 
-    const got = try decryptWithAdFramed(&self.read, "", frame, self.read_buf);
-    @memcpy(self.plain_buf[0..got.len], got);
+    if (frame.len != self.read_buf.len) return error.InvalidLength;
 
-    return self.plain_buf[0..got.len];
+    return try decryptWithAdFramed(&self.read, "", frame, self.read_buf);
 }
 
 /// Sends some data, messagepack encoded.
@@ -223,16 +234,12 @@ pub fn recvT(self: *NoiseSession, comptime T: type, rdr: *Io.Reader, alloc: Allo
     return try serde.msgpack.fromSlice(T, alloc, bytes);
 }
 
-/// `ciphertext` must be of size `MESSAGE_LENGTH` i.e. 65535, and doubles as
-/// the pad buffer: `plaintext` is padded into it, then encrypted in place.
-///
-/// `plaintext` will be padded for you. Returns `error.InvalidLength` if
-/// `plaintext` is larger than `MAX_PAYLOAD_LENGTH`.
+/// `ciphertext` doubles as the pad buffer: `plaintext` is padded into it,
+/// then encrypted in place. Its length fixes the frame size for this
+/// message, and therefore the max payload accepted (see `pad`).
 ///
 /// Returned value is simply the same slice passed in for `ciphertext`.
-pub fn encryptWithAdFramed(self: *CipherState, ad: []const u8, plaintext: []const u8, ciphertext: []u8) Error![]const u8 {
-    assert(ciphertext.len == MESSAGE_LENGTH);
-
+fn encryptWithAdFramed(self: *CipherState, ad: []const u8, plaintext: []const u8, ciphertext: []u8) Error![]const u8 {
     const padded_plaintext = try pad(plaintext, ciphertext);
 
     _ = try self.aeadEncrypt(ad, padded_plaintext, ciphertext);
@@ -240,44 +247,189 @@ pub fn encryptWithAdFramed(self: *CipherState, ad: []const u8, plaintext: []cons
     return ciphertext;
 }
 
-/// `ciphertext` must be of size `MESSAGE_LENGTH` i.e. 65535. `buf` is at
-/// least `PLAIN_LENGTH` bytes and may alias `ciphertext`.
-pub fn decryptWithAdFramed(self: *CipherState, ad: []const u8, ciphertext: []const u8, buf: []u8) Error![]const u8 {
-    assert(ciphertext.len == MESSAGE_LENGTH);
+/// `ciphertext` must be exactly `buf.len` bytes (the caller's fixed frame
+/// size) and may alias `buf`.
+fn decryptWithAdFramed(self: *CipherState, ad: []const u8, ciphertext: []const u8, buf: []u8) Error![]const u8 {
+    assert(ciphertext.len == buf.len);
 
-    _ = try self.aeadDecrypt(ad, ciphertext, buf);
+    const n = try self.aeadDecrypt(ad, ciphertext, buf);
 
-    return try unpad(buf);
+    return try unpad(buf[0..n]);
 }
 
-/// Pads the plaintext to a constant `PLAIN_LENGTH`, prefixed with its actual
-/// length, so the ciphertext never varies in size regardless of payload
-/// length.
+/// Pads the plaintext to a constant length equal to `buf.len - TAG_LENGTH`,
+/// prefixed with its actual length, so the ciphertext never varies in size
+/// regardless of payload length.
 ///
-/// Returns `error.InvalidLength` if the input is larger than
-/// `MAX_PAYLOAD_LENGTH`. I will, in the future, packetise long inputs so
-/// this case shan't be reachable.
+/// Returns `error.InvalidLength` if the input is larger than fits (i.e.
+/// larger than `buf.len - FRAME_OVERHEAD`). I will, in the future, packetise
+/// long inputs so this case shan't be reachable.
 ///
-/// `buf` must be at least `PLAIN_LENGTH` bytes; the returned slice is exactly
-/// that length.
+/// `buf` must be at least `FRAME_OVERHEAD` bytes; the returned slice is
+/// exactly `buf.len - AEAD_TAG_LENGTH` bytes.
 fn pad(plaintext: []const u8, buf: []u8) Error![]const u8 {
-    if (plaintext.len > MAX_PAYLOAD_LENGTH) return error.InvalidLength;
-    assert(buf.len >= PLAIN_LENGTH);
+    assert(buf.len > FRAME_OVERHEAD);
+    const plain_length = buf.len - AEAD_TAG_LENGTH;
 
-    std.crypto.secureZero(u8, buf[0..PLAIN_LENGTH]);
+    if (plaintext.len > plain_length - 2) return error.InvalidLength;
+
+    std.crypto.secureZero(u8, buf[0..plain_length]);
     std.mem.writeInt(u16, buf[0..2], @intCast(plaintext.len), .big);
     @memcpy(buf[2..][0..plaintext.len], plaintext);
 
-    return buf[0..PLAIN_LENGTH];
+    return buf[0..plain_length];
 }
 
 /// Given some decrypted, padded plaintext in `buf`, recovers the unpadded
-/// version as a slice.
+/// version as a slice. `buf` must be exactly the authenticated plaintext
+/// (see `decryptWithAdFramed`).
 fn unpad(buf: []const u8) Error![]const u8 {
     if (buf.len < 2) return error.InvalidLength;
 
     const len = std.mem.readInt(u16, buf[0..2], .big);
-    if (len > MAX_PAYLOAD_LENGTH or len > buf.len - 2) return error.InvalidLength;
+    if (len > buf.len - 2) return error.InvalidLength;
 
     return buf[2..][0..len];
+}
+
+const ConnectResult = struct { NoiseSession, Io.net.Stream };
+
+/// Connects to `path` and performs the initiator side of the handshake.
+fn connectAndHandshake(
+    io: Io,
+    alloc: Allocator,
+    path: []const u8,
+    identity: Network.Identity,
+    peer_pubkey: [32]u8,
+    opts: Options,
+) !ConnectResult {
+    const addr = try Io.net.UnixAddress.init(path);
+    const stream = try addr.connect(io);
+    errdefer stream.close(io);
+
+    var read_buf: [512]u8 = undefined;
+    var write_buf: [512]u8 = undefined;
+    var sock_rdr = stream.reader(io, &read_buf);
+    var sock_writer = stream.writer(io, &write_buf);
+
+    const session = try NoiseSession.init(
+        io,
+        alloc,
+        &sock_rdr.interface,
+        &sock_writer.interface,
+        identity,
+        peer_pubkey,
+        opts,
+    );
+
+    return .{ session, stream };
+}
+
+const SessionPair = struct {
+    initiator: NoiseSession,
+    initiator_stream: Io.net.Stream,
+    responder: NoiseSession,
+    responder_stream: Io.net.Stream,
+
+    fn deinit(self: *SessionPair, io: Io) void {
+        self.initiator.deinit();
+        self.responder.deinit();
+        self.initiator_stream.close(io);
+        self.responder_stream.close(io);
+    }
+};
+
+fn handshakePair(io: Io, alloc: Allocator, opts: Options) !SessionPair {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try std.fmt.allocPrint(alloc, ".zig-cache/tmp/{s}/noise_test.sock", .{&tmp.sub_path});
+    defer alloc.free(path);
+
+    const addr = try Io.net.UnixAddress.init(path);
+    var server = try addr.listen(io, .{});
+    defer server.deinit(io);
+
+    const initiator_identity = Network.Identity.generate(io);
+    const responder_identity = Network.Identity.generate(io);
+
+    var future = try io.concurrent(
+        connectAndHandshake,
+        .{
+            io,
+            alloc,
+            path,
+            initiator_identity,
+            responder_identity.public_key,
+            opts,
+        },
+    );
+
+    const responder_stream = try server.accept(io);
+    errdefer responder_stream.close(io);
+
+    var r_read_buf: [512]u8 = undefined;
+    var r_write_buf: [512]u8 = undefined;
+    var r_sock_rdr = responder_stream.reader(io, &r_read_buf);
+    var r_sock_writer = responder_stream.writer(io, &r_write_buf);
+
+    const responder_session = try NoiseSession.init(
+        io,
+        alloc,
+        &r_sock_rdr.interface,
+        &r_sock_writer.interface,
+        responder_identity,
+        null,
+        opts,
+    );
+
+    const initiator_session, const initiator_stream = try future.await(io);
+
+    return .{
+        .initiator = initiator_session,
+        .initiator_stream = initiator_stream,
+        .responder = responder_session,
+        .responder_stream = responder_stream,
+    };
+}
+
+test "handshake identifies both peers correctly" {
+    const io = testing.io;
+    const alloc = testing.allocator;
+
+    const initiator_identity = Network.Identity.generate(io);
+    const responder_identity = Network.Identity.generate(io);
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try std.fmt.allocPrint(alloc, ".zig-cache/tmp/{s}/noise_test.sock", .{&tmp.sub_path});
+    defer alloc.free(path);
+
+    const addr = try Io.net.UnixAddress.init(path);
+    var server = try addr.listen(io, .{});
+    defer server.deinit(io);
+
+    var future = try io.concurrent(connectAndHandshake, .{
+        io, alloc, path, initiator_identity, responder_identity.public_key, Options{},
+    });
+
+    const responder_stream = try server.accept(io);
+    defer responder_stream.close(io);
+
+    var r_read_buf: [512]u8 = undefined;
+    var r_write_buf: [512]u8 = undefined;
+    var r_sock_rdr = responder_stream.reader(io, &r_read_buf);
+    var r_sock_writer = responder_stream.writer(io, &r_write_buf);
+
+    var responder_session = try NoiseSession.init(io, alloc, &r_sock_rdr.interface, &r_sock_writer.interface, responder_identity, null, .{});
+    defer responder_session.deinit();
+
+    var initiator_session, const initiator_stream = try future.await(io);
+    defer initiator_session.deinit();
+    defer initiator_stream.close(io);
+
+    // Each side's peer_pubkey is the *other* side's static public key.
+    try testing.expectEqualSlices(u8, &responder_identity.public_key, &initiator_session.peer_pubkey);
+    try testing.expectEqualSlices(u8, &initiator_identity.public_key, &responder_session.peer_pubkey);
 }

@@ -25,7 +25,6 @@ const DH_LENGTH = std.crypto.dh.X25519.shared_length;
 
 const CipherState = @import("CipherState.zig");
 const NoiseSession = @import("NoiseSession.zig");
-const MESSAGE_LENGTH = NoiseSession.MESSAGE_LENGTH;
 const SymmetricState = @import("SymmetricState.zig");
 
 const HandshakeState = @This();

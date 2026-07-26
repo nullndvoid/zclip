@@ -144,9 +144,17 @@ pub fn getOrInit(io: Io, alloc: Allocator, data_dir: []const u8) !Identity {
     return identity;
 }
 
-pub fn writeIdentity(io: Io, data_dir: []const u8) !Identity {
+/// Generates a new identity. This is meant to be used in unit tests.
+pub fn generate(io: Io) Identity {
     const kp = X25519.KeyPair.generate(io);
 
+    return .{
+        .public_key = kp.public_key,
+        .private_key = kp.secret_key,
+    };
+}
+
+pub fn writeIdentity(io: Io, data_dir: []const u8) !Identity {
     Io.Dir.cwd().createDir(io, data_dir, KEYFILE_DIR_PERMS) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => {
@@ -175,7 +183,9 @@ pub fn writeIdentity(io: Io, data_dir: []const u8) !Identity {
     var file_writer = keyfile.writer(io, &writer_buf);
     const writer = &file_writer.interface;
 
-    writeKey(writer, &kp.secret_key) catch {
+    const kp = generate(io);
+
+    writeKey(writer, &kp.private_key) catch {
         log.err("Could not write private key to {s}/identity. Reason: {t}", .{
             data_dir,
             file_writer.err orelse error.WriteFailed,
@@ -183,10 +193,7 @@ pub fn writeIdentity(io: Io, data_dir: []const u8) !Identity {
         return error.WriteFailed;
     };
 
-    return Identity{
-        .private_key = kp.secret_key,
-        .public_key = kp.public_key,
-    };
+    return kp;
 }
 
 fn writeKey(writer: *Io.Writer, secret_key: []const u8) !void {

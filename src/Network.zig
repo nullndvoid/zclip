@@ -224,8 +224,8 @@ fn connectToPeer(self: *Network, peer: Peer) error{Canceled}!void {
             rdr,
             writer,
             self.identity,
-            &peer.pubkey,
-            self.repo,
+            peer.pubkey,
+            .{},
         ) catch |err| switch (err) {
             error.PeerDoesNotHoldPubkey => {
                 stream.close(self.io);
@@ -255,7 +255,7 @@ fn connectToPeer(self: *Network, peer: Peer) error{Canceled}!void {
         defer session.deinit();
         defer stream.close(self.io);
 
-        self.processPackets(rdr, writer, &session) catch |err| {
+        self.processPackets(rdr, writer, &session, peer) catch |err| {
             log.err("Processing packets failed. Reason: {t}", .{err});
         };
 
@@ -299,9 +299,9 @@ fn handleConnectionRw(self: *Network, rdr: *Io.Reader, writer: *Io.Writer) !void
         writer,
         self.identity,
         null,
-        self.repo,
+        .{},
     ) catch |err| switch (err) {
-        error.UnknownPeer, error.PeerDoesNotHoldPubkey => return,
+        error.PeerDoesNotHoldPubkey => return,
         else => {
             log.err("Something went wrong with the Noise handshake :(. What: {t}", .{err});
             log.err("The connection will be closed.", .{});
@@ -310,12 +310,31 @@ fn handleConnectionRw(self: *Network, rdr: *Io.Reader, writer: *Io.Writer) !void
         },
     };
 
+    // Check the peer is in DB.
+    const peer = self.repo.getPeerByPubkey(&session.peer_pubkey, conn_arena.allocator()) catch |err| {
+        switch (err) {
+            error.NotFound => {
+                log.warn("Peer with pubkey {b64} was not found! Unknown connection.", .{&session.peer_pubkey});
+            },
+            else => {
+                log.err("Something went wrong looking for peer with pubkey {b64} in DB! What: {t}.", .{ &session.peer_pubkey, err });
+            },
+        }
+
+        return err;
+    };
+
     defer session.deinit();
 
-    try self.processPackets(rdr, writer, &session);
+    try self.processPackets(rdr, writer, &session, peer);
 }
 
-fn processPackets(self: *Network, rdr: *Io.Reader, writer: *Io.Writer, session: *NoiseSession) !void {
+fn processPackets(self: *Network, rdr: *Io.Reader, writer: *Io.Writer, session: *NoiseSession, peer: Peer) !void {
+    log.debug(
+        "Encrypted connection established with peer #{d} ({s})",
+        .{ peer.id, peer.nickname },
+    );
+
     _ = writer; // autofix
     var packet_arena = Arena.init(self.alloc);
     defer packet_arena.deinit();
@@ -329,7 +348,7 @@ fn processPackets(self: *Network, rdr: *Io.Reader, writer: *Io.Writer, session: 
                 else => {},
             }
 
-            log.err("Could not read packet from peer `{s}`. Reason: {t}", .{ session.peer_nick, err });
+            log.err("Could not read packet from peer `{s}`. Reason: {t}", .{ peer.nickname, err });
 
             return err;
         };
