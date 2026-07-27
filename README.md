@@ -9,6 +9,7 @@ A tool to manage and sync your clipboard between devices.
 - Support images and files?
 - Nice GUI <-- Possibly as a separate app anyway? Qt perhaps or something Zig-native.
 - System tray icon
+- For files/large pastes, transmit the file lazily, with type file_preview or something similar. Then the data can be a thumbnail if present.
 
 Maybe something like this already exists but this would be a nice tool to have :)
 
@@ -17,7 +18,7 @@ features I am less worried about.
 
 # Dependencies
 
-* wl-clipboard on Wayland for unit tests
+- wl-clipboard on Wayland for unit tests
 
 # Notes
 
