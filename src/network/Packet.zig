@@ -46,12 +46,12 @@ const ERROR_MESSAGES = ErrorMessageMap.initComptime(&.{
 });
 
 /// Returns the friendlier error message given an error.
-pub fn errorMessage(err: Error) []const u8 {
+pub fn errorMessage(err: ErrorTags) []const u8 {
     return ERROR_MESSAGES.get(@errorName(err)) orelse return "No such error.";
 }
 
-/// These are errors that can be returned across peer bounadries.
-pub const Error = error{
+/// These are errors that can be returned across peer boundaries.
+pub const ErrorTags = enum {
     /// An ID was supplied in a request but did not exist.
     NoSuchId,
 };
@@ -108,7 +108,7 @@ pub const Payload = union(enum) {
 pub const PayloadOrError = union(enum) {
     ok: Payload,
     err: struct {
-        tag: Error,
+        tag: ErrorTags,
         /// For debugging purposes. May be displayed to the user.
         message: []const u8,
     },
