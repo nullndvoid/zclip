@@ -47,7 +47,34 @@ pub const Options = struct {
     /// Smaller values shrink memory and bandwidth, at the cost of a smaller
     /// `maxPayloadLength`, which is `frame_length`, less 18 bytes.
     frame_length: u16 = 65535,
+
+    /// The version of the packet protocol being used.
+    ///
+    /// This can be used for protocol version negotiation
+    /// if I ever bump the version when the software
+    /// is more stable.
+    ///
+    /// In general, parties will want to select the highest
+    /// version they can support, which is set by default here.
+    ///
+    /// Then the parties should use the lower of the two offered,
+    /// or complain.
+    protocol_version: u8 = PROTOCOL_VERSION,
 };
+
+/// Sent in prologue for fun.
+pub const MAGIC = "zclip";
+/// Can be used to negotiate the protocol version ahead of time.
+///
+/// This will be the payload. Both parties should use the lowest
+/// of the two they support. If I choose to deprecate old versions,
+/// then these can be rejected before the handshake completes.
+///
+/// Will be sent as a u8 directly. i.e. single byte payload.
+pub const PROTOCOL_VERSION: u8 = 1;
+
+/// I decided 0 would be no fun.
+pub const MIN_PROTOCOL_VERSION: u8 = 1;
 
 io: Io,
 opts: Options,
@@ -92,9 +119,17 @@ pub fn init(
     opts: Options,
 ) !NoiseSession {
     const initiator = peer_pubkey != null;
+    var mutable_opts = opts;
 
     const split =
-        try handshake(io, rdr, writer, identity, peer_pubkey);
+        try handshake(
+            io,
+            rdr,
+            writer,
+            identity,
+            peer_pubkey,
+            &mutable_opts,
+        );
 
     const read_buf = try alloc.alloc(u8, opts.frame_length);
     errdefer alloc.free(read_buf);
@@ -109,7 +144,7 @@ pub fn init(
         .write = if (initiator) split.@"0" else split.@"1",
         .read_buf = read_buf,
         .write_buf = write_buf,
-        .opts = opts,
+        .opts = mutable_opts,
         .peer_pubkey = split.@"2",
     };
 }
@@ -134,6 +169,7 @@ fn handshake(
     writer: *Io.Writer,
     identity: Network.Identity,
     remote_pubkey: ?[32]u8,
+    opts: *Options,
 ) !struct { CipherState, CipherState, [32]u8 } {
     const initiator = remote_pubkey != null;
     const s = HandshakeState.KeyPair{
@@ -143,7 +179,7 @@ fn handshake(
 
     var shaker = try HandshakeState.init(
         initiator,
-        &.{},
+        MAGIC,
         s,
         remote_pubkey,
     );
@@ -151,15 +187,22 @@ fn handshake(
     var msg_buf: [HANDSHAKE_BUF_LEN]u8 = undefined;
     var payload_buf: [HANDSHAKE_BUF_LEN]u8 = undefined;
 
+    const payload: []const u8 = &.{opts.protocol_version};
+
     if (initiator) {
-        const len0 = try shaker.writeMessage(io, &.{}, &msg_buf);
+        const len0 = try shaker.writeMessage(io, payload, &msg_buf);
         try sendFrame(writer, msg_buf[0..len0]);
 
         const m1 = try readFrame(rdr, &msg_buf);
-        _ = try shaker.readMessage(m1, &payload_buf);
+        const got = try shaker.readMessage(m1, &payload_buf);
+
+        const version = payload_buf[0..got][0];
+
+        if (version < MIN_PROTOCOL_VERSION) return error.InvalidProtocolVersion;
+        if (version < PROTOCOL_VERSION) opts.protocol_version = version;
     } else {
         const m0 = try readFrame(rdr, &msg_buf);
-        _ = shaker.readMessage(m0, &payload_buf) catch |err| switch (err) {
+        const got = shaker.readMessage(m0, &payload_buf) catch |err| switch (err) {
             error.DecryptionFailed => {
                 log.warn("Peer does not hold correct public key. Aborting.", .{});
                 return error.PeerDoesNotHoldPubkey;
@@ -167,9 +210,14 @@ fn handshake(
             else => return err,
         };
 
+        const version = payload_buf[0..got][0];
+
+        if (version < MIN_PROTOCOL_VERSION) return error.InvalidProtocolVersion;
+        if (version < PROTOCOL_VERSION) opts.protocol_version = version;
+
         std.debug.assert(shaker.rs != null);
 
-        const l1 = try shaker.writeMessage(io, &.{}, &msg_buf);
+        const l1 = try shaker.writeMessage(io, payload, &msg_buf);
         try sendFrame(writer, msg_buf[0..l1]);
     }
 
