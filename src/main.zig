@@ -222,7 +222,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
                         };
 
                         const host: ?Network.Host = if (add.host) |host_str|
-                            try Network.parseHostname(host_str)
+                            try Network.Host.parse(host_str)
                         else
                             null;
 

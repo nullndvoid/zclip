@@ -157,9 +157,7 @@ fn toNetworkPeer(peer: models.NetworkPeer, alloc: Allocator) !Network.Peer {
 
     var host: ?Network.Host = null;
     if (peer.addr) |addr| {
-        const duped_addr = try alloc.dupe(u8, addr.data);
-        errdefer alloc.free(duped_addr);
-        host = try Network.parseHostname(duped_addr);
+        host = try Network.Host.parse(addr.data);
     }
 
     const duped_nickname = try alloc.dupe(u8, peer.nickname.data);

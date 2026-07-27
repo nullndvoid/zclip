@@ -60,15 +60,44 @@ pub const Config = struct {
 };
 
 pub const Host = struct {
-    name: Io.net.HostName,
+    name_buf: [Io.net.HostName.max_len]u8 = @splat(0),
+    name_len: u8 = 0,
     port: u16,
+
+    /// Parses an IP or hostname and optional port number from a string.
+    pub fn parse(str: []const u8) !Host {
+        const colon = std.mem.indexOfScalar(u8, str, ':');
+        var rest = str;
+        const port = blk: {
+            if (colon) |idx| {
+                if (idx == str.len - 1) return error.InvalidPort;
+                rest = str[0..idx];
+                break :blk try std.fmt.parseInt(u16, str[idx + 1 ..], 10);
+            } else {
+                break :blk DEFAULT_NET_PORT;
+            }
+        };
+
+        try Io.net.HostName.validate(rest);
+
+        var self = Host{
+            .name_len = @intCast(rest.len),
+            .port = port,
+        };
+        @memcpy(self.name_buf[0..rest.len], rest);
+
+        return self;
+    }
+
+    pub fn hostname(self: *const Host) Io.net.HostName {
+        return .{ .bytes = self.name_buf[0..self.name_len] };
+    }
 
     pub fn format(
         self: Host,
         writer: *std.Io.Writer,
     ) Io.Writer.Error!void {
-        try writer.print("{s}:{d}", .{ self.name.bytes, self.port });
-        try writer.flush();
+        try writer.print("{s}:{d}", .{ self.name_buf[0..self.name_len], self.port });
     }
 };
 
@@ -80,28 +109,6 @@ pub fn parseIp(ip: []const u8) !Io.net.IpAddress {
     }
 
     return addr;
-}
-
-/// Parses an IP or hostname and optional port number from a string.
-pub fn parseHostname(ip: []const u8) !Host {
-    const colon = std.mem.indexOfScalar(u8, ip, ':');
-    var rest = ip;
-    const port = blk: {
-        if (colon) |idx| {
-            if (idx == ip.len - 1) return error.InvalidPort;
-            rest = ip[0..idx];
-            break :blk try std.fmt.parseInt(u16, ip[idx + 1 ..], 10);
-        } else {
-            break :blk DEFAULT_NET_PORT;
-        }
-    };
-
-    const hostname = try Io.net.HostName.init(rest);
-
-    return .{
-        .name = hostname,
-        .port = port,
-    };
 }
 
 /// Returns a list of all peers that this daemon should attempt to connect to.
@@ -177,7 +184,7 @@ const Backoff = struct {
 
 fn connectWithBackoff(self: *Network, host: Host, peer: Peer, backoff: *Backoff) error{Canceled}!Io.net.Stream {
     while (true) {
-        return host.name.connect(
+        return host.hostname().connect(
             self.io,
             host.port,
             .{ .mode = .stream, .protocol = .tcp },
