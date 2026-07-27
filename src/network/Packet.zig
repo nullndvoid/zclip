@@ -17,6 +17,7 @@
 
 const std = @import("std");
 const Io = std.Io;
+const assert = std.debug.assert;
 
 const clipboard = @import("clipboard");
 const ClipFormat = clipboard.Clip.Format;
@@ -96,6 +97,30 @@ pub const Payload = union(enum) {
     /// Sent when the peer is shutting down, so all connected peers know to
     /// terminate their connections.
     shutting_down,
+
+    const Fields = @typeInfo(Payload).@"union".fields;
+    const Variant = @typeInfo(Payload).@"union".tag_type.?;
+
+    /// Returns true if a variant/payload may need packetisation.
+    pub fn needsPacketisation(comptime variant: Variant) bool {
+        inline for (Fields) |uf| {
+            const var_name = @tagName(variant);
+            comptime if (!std.mem.eql(u8, var_name, uf.name)) continue;
+
+            switch (@typeInfo(uf.type)) {
+                .@"struct" => |si| {
+                    inline for (si.fields) |sf| {
+                        comptime if (sf.type != Chunk) continue;
+
+                        return true;
+                    }
+                },
+                else => return false,
+            }
+        }
+
+        return false;
+    }
 };
 
 pub const PayloadOrError = union(enum) {
@@ -200,4 +225,17 @@ test "check latency" {
         got,
         5.0,
     );
+}
+
+test "needs packetisation" {
+    const expect = std.testing.expect;
+
+    try expect(Payload.needsPacketisation(.clip));
+    try expect(Payload.needsPacketisation(.request_clip_response));
+
+    try expect(!Payload.needsPacketisation(.shutting_down));
+    try expect(!Payload.needsPacketisation(.ok_response));
+    try expect(!Payload.needsPacketisation(.request_formats));
+    try expect(!Payload.needsPacketisation(.request_clip));
+    try expect(!Payload.needsPacketisation(.formats_response));
 }
