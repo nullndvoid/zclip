@@ -191,9 +191,9 @@ fn handshake(
 
     if (initiator) {
         const len0 = try shaker.writeMessage(io, payload, &msg_buf);
-        try sendFrame(writer, msg_buf[0..len0]);
+        try sendHandshakeMessage(writer, msg_buf[0..len0]);
 
-        const m1 = try readFrame(rdr, &msg_buf);
+        const m1 = try readHandshakeMessage(rdr, &msg_buf);
         const got = try shaker.readMessage(m1, &payload_buf);
 
         const version = payload_buf[0..got][0];
@@ -201,7 +201,7 @@ fn handshake(
         if (version < MIN_PROTOCOL_VERSION) return error.InvalidProtocolVersion;
         if (version < PROTOCOL_VERSION) opts.protocol_version = version;
     } else {
-        const m0 = try readFrame(rdr, &msg_buf);
+        const m0 = try readHandshakeMessage(rdr, &msg_buf);
         const got = shaker.readMessage(m0, &payload_buf) catch |err| switch (err) {
             error.DecryptionFailed => {
                 log.warn("Peer does not hold correct public key. Aborting.", .{});
@@ -218,7 +218,7 @@ fn handshake(
         std.debug.assert(shaker.rs != null);
 
         const l1 = try shaker.writeMessage(io, payload, &msg_buf);
-        try sendFrame(writer, msg_buf[0..l1]);
+        try sendHandshakeMessage(writer, msg_buf[0..l1]);
     }
 
     std.debug.assert(shaker.done());
@@ -229,7 +229,8 @@ fn handshake(
     return .{ first, second, peer_publickey };
 }
 
-fn sendFrame(writer: *Io.Writer, data: []const u8) !void {
+/// Handshake messages vary in length.
+fn sendHandshakeMessage(writer: *Io.Writer, data: []const u8) !void {
     assert(data.len <= std.math.maxInt(u16));
 
     try writer.writeInt(u16, @intCast(data.len), .big);
@@ -237,7 +238,7 @@ fn sendFrame(writer: *Io.Writer, data: []const u8) !void {
     try writer.flush();
 }
 
-fn readFrame(rdr: *Io.Reader, buf: []u8) ![]const u8 {
+fn readHandshakeMessage(rdr: *Io.Reader, buf: []u8) ![]const u8 {
     const length = try rdr.takeInt(u16, .big);
     if (length > buf.len) return error.FrameTooLarge;
 
@@ -251,19 +252,19 @@ pub fn maxPayloadLength(self: *const NoiseSession) u16 {
     return self.opts.frame_length - FRAME_OVERHEAD;
 }
 
+/// Transport frames are always exactly `opts.frame_length` bytes.
 pub fn send(self: *NoiseSession, writer: *Io.Writer, data: []const u8) !void {
     const bytes = try encryptWithAdFramed(&self.write, "", data, self.write_buf);
 
-    try sendFrame(writer, bytes);
+    try writer.writeAll(bytes);
+    try writer.flush();
 }
 
 /// The returned slice is valid until the next call to recv.
 pub fn recv(self: *NoiseSession, rdr: *Io.Reader) ![]const u8 {
-    const frame = try readFrame(rdr, self.read_buf);
+    try rdr.readSliceAll(self.read_buf);
 
-    if (frame.len != self.read_buf.len) return error.InvalidLength;
-
-    return try decryptWithAdFramed(&self.read, "", frame, self.read_buf);
+    return try decryptWithAdFramed(&self.read, "", self.read_buf, self.read_buf);
 }
 
 /// Sends some data, messagepack encoded.
