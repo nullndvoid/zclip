@@ -32,16 +32,6 @@ const Config = @This();
 /// This field should not be accessed directly. Instead call `Config.get` for a copy.
 data: InnerConfig,
 path: []const u8,
-dir: Io.Dir,
-io: Io,
-alloc: Allocator,
-should_close: bool = true,
-
-pub fn deinit(self: *Config) void {
-    if (self.should_close) {
-        self.dir.close(self.io);
-    }
-}
 
 /// Wrapped in Config because we want to manage the lifetimes of data allocated but
 /// automatically parse into a struct.
@@ -65,11 +55,7 @@ pub const InnerConfig = struct {
     };
 };
 
-fn toSlice(cfg: InnerConfig, allocator: Allocator) ![]const u8 {
-    return try Serde.toml.toSlice(allocator, cfg);
-}
-
-fn parseSlice(io: Io, allocator: Allocator, data: []const u8, path: []const u8, dir: Io.Dir, should_close: bool) !Config {
+fn parseSlice(allocator: Allocator, data: []const u8, path: []const u8) !Config {
     const cfg = Serde.toml.fromSlice(InnerConfig, allocator, data) catch |err| {
         log.err("Error parsing config at {s}: {t}", .{ path, err });
         return err;
@@ -78,15 +64,11 @@ fn parseSlice(io: Io, allocator: Allocator, data: []const u8, path: []const u8, 
     return .{
         .data = cfg,
         .path = path,
-        .io = io,
-        .alloc = allocator,
-        .dir = dir,
-        .should_close = should_close,
     };
 }
 
 /// The opened dir must outlive Config. Just call deinit on this Config.
-fn fromPathWithDir(io: Io, dir: Io.Dir, allocator: Allocator, path: []const u8, should_close: bool) !Config {
+fn fromPathWithDir(io: Io, dir: Io.Dir, allocator: Allocator, path: []const u8) !Config {
     var config = dir.openFile(io, path, .{}) catch |err| {
         switch (err) {
             error.FileNotFound => {
@@ -108,11 +90,11 @@ fn fromPathWithDir(io: Io, dir: Io.Dir, allocator: Allocator, path: []const u8, 
     const bytes = try rdr.allocRemaining(allocator, .unlimited);
     defer allocator.free(bytes);
 
-    return try parseSlice(io, allocator, bytes, try allocator.dupe(u8, path), dir, should_close);
+    return try parseSlice(allocator, bytes, try allocator.dupe(u8, path));
 }
 
 pub fn fromPath(io: Io, allocator: Allocator, path: []const u8) !Config {
-    return try fromPathWithDir(io, Io.Dir.cwd(), allocator, path, false);
+    return try fromPathWithDir(io, Io.Dir.cwd(), allocator, path);
 }
 
 /// TODO: Use a Well known location e.g. $XDG_CONFIG_DIR/zclip/zclip.zon.
@@ -173,8 +155,7 @@ test "read config" {
         try writer.flush();
     }
 
-    var cfg = try Config.fromPathWithDir(io, tmp_dir.dir, arena.allocator(), "config.toml", false);
-    defer cfg.deinit();
+    var cfg = try Config.fromPathWithDir(io, tmp_dir.dir, arena.allocator(), "config.toml");
 
     const data = cfg.get();
 

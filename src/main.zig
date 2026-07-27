@@ -106,7 +106,6 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     defer envmap.deinit();
 
     var config: Config = undefined;
-    defer config.deinit();
 
     if (cli_opts.config_path) |path| {
         config = try Config.fromPath(io, arena.allocator(), path);

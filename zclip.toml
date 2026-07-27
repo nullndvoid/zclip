@@ -16,8 +16,3 @@ bind_address = "127.0.0.1"
 # This can be relative to cwd of the daemon/client, or absolute.
 
 # data_dir = "./zclip"
-
-[client]
-# Same rules apply as above. This should probably match daemon.unix_socket_address.
-
-# unix_socket_address = "mycustom.sock"

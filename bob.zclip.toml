@@ -16,8 +16,3 @@ unix_socket_address = "./data/zclip_bob.sock"
 # This can be relative to cwd of the daemon/client, or absolute.
 
 data_dir = "./data"
-
-[client]
-# Same rules apply as above. This should probably match daemon.unix_socket_address.
-
-# unix_socket_address = "mycustom.sock"
