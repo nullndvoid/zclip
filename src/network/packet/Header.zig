@@ -15,7 +15,7 @@
 
 const std = @import("std");
 
-const DateTime = @import("../DateTime.zig");
+const DateTime = @import("../../DateTime.zig");
 const Packet = @import("../Packet.zig");
 const Id = Packet.Id;
 

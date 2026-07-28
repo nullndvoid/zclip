@@ -61,11 +61,128 @@ pub fn init(io: Io, id: Id, payload: Payload) Packet {
     };
 }
 
+const MAX_CHUNK_DATA_LEN = 50;
+const MAX_CHUNK_DATA_LEN_B64 = std.base64.standard.Encoder.calcSize(MAX_CHUNK_DATA_LEN);
+
+/// TODO: Tidy this up because what the fuck is this.
 pub fn format(
     self: Packet,
     writer: *std.Io.Writer,
 ) std.Io.Writer.Error!void {
-    Serde.json.toPrettyWriter(writer, self, .{}) catch unreachable;
+    // Some breathing room for approx 28 fixed bytes (truncated... text)
+    // and the digits of length. If this panics, you must be debug logging
+    // ~80 - 28 bytes, so a 52 digit number of bytes.
+    //
+    // This is unreachable since encrypted transport payloads are at most 64KiB,
+    // so 65536 is 5 digits.
+    //
+    // In writing this I can see the buffer can happily be 33 bytes larger (not 64)
+    // but I like powers of 2.
+    const PLAINTEXT_BUF_LEN = MAX_CHUNK_DATA_LEN + 64;
+    const B64_BUF_LEN = MAX_CHUNK_DATA_LEN_B64 + 64;
+
+    switch (self.payload) {
+        .clip => |clip| {
+            // I think for the text check I could actually just scan the first few bytes.
+            // Maybe I will write this into clipboard-zig to handle format checking.
+            // Things like application/json are obviously text, for example.
+            var checks: packed struct { is_text: bool, small_enough: bool } = .{
+                .is_text = std.mem.startsWith(u8, clip.mime_type, "text/"),
+                .small_enough = clip.chunk.bytes.len <= MAX_CHUNK_DATA_LEN,
+            };
+
+            // Recalculate if base64 since we could shave some bytes off.
+            if (!checks.is_text)
+                checks.small_enough = std.base64.standard.Encoder.calcSize(clip.chunk.bytes.len) <= MAX_CHUNK_DATA_LEN;
+
+            switch (checks) {
+                .{ .is_text = true, .small_enough = true } => Serde.json.toPrettyWriter(writer, self, .{}) catch unreachable,
+                .{ .is_text = true, .small_enough = false } => {
+                    var chunk_buf: [PLAINTEXT_BUF_LEN]u8 = undefined;
+                    var chunk_writer = std.Io.Writer.fixed(&chunk_buf);
+                    var self_copy = self;
+
+                    chunk_writer.print("{s}... (truncated, length was {d})", .{
+                        clip.chunk.bytes[0..MAX_CHUNK_DATA_LEN],
+                        clip.chunk.bytes.len,
+                    }) catch unreachable;
+
+                    self_copy.payload.clip.chunk.bytes = chunk_writer.buffered();
+
+                    Serde.json.toPrettyWriter(writer, self_copy, .{}) catch unreachable;
+                },
+                .{ .is_text = false, .small_enough = false } => {
+                    var chunk_buf: [B64_BUF_LEN]u8 = undefined;
+                    var chunk_writer = std.Io.Writer.fixed(&chunk_buf);
+                    var self_copy = self;
+
+                    chunk_writer.print("{b64}... (truncated, length was {d})", .{
+                        clip.chunk.bytes[0..MAX_CHUNK_DATA_LEN],
+                        clip.chunk.bytes.len,
+                    }) catch unreachable;
+
+                    self_copy.payload.clip.chunk.bytes = chunk_writer.buffered();
+
+                    Serde.json.toPrettyWriter(writer, self_copy, .{}) catch unreachable;
+                },
+                .{ .is_text = false, .small_enough = true } => {
+                    var chunk_buf: [MAX_CHUNK_DATA_LEN_B64]u8 = undefined;
+                    var chunk_writer = std.Io.Writer.fixed(&chunk_buf);
+                    var self_copy = self;
+
+                    chunk_writer.print("{b64}", .{clip.chunk.bytes}) catch unreachable;
+
+                    self_copy.payload.clip.chunk.bytes = chunk_writer.buffered();
+
+                    Serde.json.toPrettyWriter(writer, self_copy, .{}) catch unreachable;
+                },
+            }
+        },
+        .request_clip_response => |resp| {
+            const checks: packed struct { is_text: bool, small_enough: bool } = .{
+                .is_text = resp.format.fmt == .text,
+                .small_enough = resp.chunk.bytes.len <= MAX_CHUNK_DATA_LEN,
+            };
+
+            switch (checks) {
+                .{ .is_text = true, .small_enough = true } => Serde.json.toPrettyWriter(writer, self, .{}) catch unreachable,
+                .{ .is_text = true, .small_enough = false } => {
+                    var chunk_buf: [MAX_CHUNK_DATA_LEN + 3]u8 = undefined;
+                    var chunk_writer = std.Io.Writer.fixed(&chunk_buf);
+                    var self_copy = self;
+
+                    chunk_writer.print("{s}...", .{resp.chunk.bytes[0..MAX_CHUNK_DATA_LEN]}) catch unreachable;
+
+                    self_copy.payload.request_clip_response.chunk.bytes = chunk_writer.buffered();
+
+                    Serde.json.toPrettyWriter(writer, self_copy, .{}) catch unreachable;
+                },
+                .{ .is_text = false, .small_enough = false } => {
+                    var chunk_buf: [MAX_CHUNK_DATA_LEN_B64 + 3]u8 = undefined;
+                    var chunk_writer = std.Io.Writer.fixed(&chunk_buf);
+                    var self_copy = self;
+
+                    chunk_writer.print("{b64}...", .{resp.chunk.bytes[0..MAX_CHUNK_DATA_LEN]}) catch unreachable;
+
+                    self_copy.payload.request_clip_response.chunk.bytes = chunk_writer.buffered();
+
+                    Serde.json.toPrettyWriter(writer, self_copy, .{}) catch unreachable;
+                },
+                .{ .is_text = false, .small_enough = true } => {
+                    var chunk_buf: [MAX_CHUNK_DATA_LEN_B64]u8 = undefined;
+                    var chunk_writer = std.Io.Writer.fixed(&chunk_buf);
+                    var self_copy = self;
+
+                    chunk_writer.print("{b64}", .{resp.chunk.bytes}) catch unreachable;
+
+                    self_copy.payload.request_clip_response.chunk.bytes = chunk_writer.buffered();
+
+                    Serde.json.toPrettyWriter(writer, self_copy, .{}) catch unreachable;
+                },
+            }
+        },
+        else => Serde.json.toPrettyWriter(writer, self, .{}) catch unreachable,
+    }
 }
 
 /// All integer values are sent in big endian network order.

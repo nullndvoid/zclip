@@ -139,12 +139,6 @@ pub const Chunk = struct {
     seq: u32,
     end: u32,
     bytes: []const u8,
-
-    pub const serde = .{
-        .with = .{
-            .bytes = Serde.helpers.UnixTimestampMs,
-        },
-    };
 };
 
 // Comptime check that Chunk fields are last. This encourages people to read and
