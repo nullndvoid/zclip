@@ -47,6 +47,8 @@ pub const Options = struct {
     /// this many bytes, so ciphertext size never reveals payload length.
     /// Smaller values shrink memory and bandwidth, at the cost of a smaller
     /// `maxPayloadLength`, which is `frame_length`, less 18 bytes.
+    ///
+    /// Setting this lower than MIN_FRAME_LENGTH will return an error on init.
     frame_length: u16 = 65535,
 
     /// The version of the packet protocol being used.
@@ -93,10 +95,16 @@ pub fn deinit(self: *NoiseSession) void {
     self.write.deinit();
 
     std.crypto.secureZero(u8, self.read_buf);
+    // Before writes are flushed, this is plaintext.
+    std.crypto.secureZero(u8, self.write_buf);
 
     self.alloc.free(self.read_buf);
     self.alloc.free(self.write_buf);
 }
+
+/// Sensible minimum frame length that takes packet overhead into
+/// consideration.
+pub const MIN_FRAME_LENGTH = 8192;
 
 /// Initiator if `peer_pubkey` is not null.
 ///
@@ -119,6 +127,9 @@ pub fn init(
     peer_pubkey: ?[32]u8,
     opts: Options,
 ) !NoiseSession {
+    if (opts.frame_length < MIN_FRAME_LENGTH)
+        return error.InvalidFrameLength;
+
     const initiator = peer_pubkey != null;
     var mutable_opts = opts;
 
@@ -467,4 +478,147 @@ test "handshake identifies both peers correctly" {
     // Each side's peer_pubkey is the *other* side's static public key.
     try testing.expectEqualSlices(u8, &responder_identity.public_key, &initiator_session.peer_pubkey);
     try testing.expectEqualSlices(u8, &initiator_identity.public_key, &responder_session.peer_pubkey);
+}
+
+test "encryptedWriter -- short write" {
+    const io = testing.io;
+    const alloc = testing.allocator;
+
+    var pair = try handshakePair(io, alloc, .{});
+    defer pair.deinit(io);
+
+    var reader_buf: [512]u8 = undefined;
+    var responder_reader = pair.responder_stream.reader(io, &reader_buf);
+    const rdr = &responder_reader.interface;
+
+    {
+        var writer_buf: [512]u8 = undefined;
+        var initiator_writer = pair.initiator_stream.writer(io, &writer_buf);
+
+        var encrypted_writer = pair.initiator.encryptedWriter(&initiator_writer.interface);
+        const writer = &encrypted_writer.interface;
+
+        try writer.writeByte(0xAA);
+        try writer.flush();
+    }
+
+    const bytes = try pair.responder.recv(rdr);
+
+    try testing.expectEqualSlices(u8, &[_]u8{0xAA}, bytes);
+}
+
+test "encryptedWriter -- consecutive writes stay independent" {
+    const io = testing.io;
+    const alloc = testing.allocator;
+
+    var pair = try handshakePair(io, alloc, .{ .frame_length = MIN_FRAME_LENGTH });
+    defer pair.deinit(io);
+
+    var reader_buf: [512]u8 = undefined;
+    var responder_reader = pair.responder_stream.reader(io, &reader_buf);
+    const rdr = &responder_reader.interface;
+
+    var writer_buf: [512]u8 = undefined;
+    var initiator_writer = pair.initiator_stream.writer(io, &writer_buf);
+
+    var encrypted_writer = pair.initiator.encryptedWriter(&initiator_writer.interface);
+    const writer = &encrypted_writer.interface;
+
+    for ([_][]const u8{ "first", "second message", "3" }) |msg| {
+        try writer.writeAll(msg);
+        try writer.flush();
+
+        try testing.expectEqualSlices(u8, msg, try pair.responder.recv(rdr));
+    }
+}
+
+test "encryptedWriter -- payload of exactly maxPayloadLength" {
+    const io = testing.io;
+    const alloc = testing.allocator;
+
+    var pair = try handshakePair(io, alloc, .{ .frame_length = MIN_FRAME_LENGTH });
+    defer pair.deinit(io);
+
+    const payload = try alloc.alloc(u8, pair.initiator.maxPayloadLength());
+    defer alloc.free(payload);
+    for (payload, 0..) |*b, i| b.* = @truncate(i);
+
+    var reader_buf: [512]u8 = undefined;
+    var responder_reader = pair.responder_stream.reader(io, &reader_buf);
+    const rdr = &responder_reader.interface;
+
+    var writer_buf: [512]u8 = undefined;
+    var initiator_writer = pair.initiator_stream.writer(io, &writer_buf);
+
+    var encrypted_writer = pair.initiator.encryptedWriter(&initiator_writer.interface);
+    const writer = &encrypted_writer.interface;
+
+    try writer.writeAll(payload);
+    try writer.flush();
+
+    try testing.expectEqualSlices(u8, payload, try pair.responder.recv(rdr));
+}
+
+test "encryptedWriter -- padding is zeroed after a shorter write" {
+    const io = testing.io;
+    const alloc = testing.allocator;
+
+    var pair = try handshakePair(io, alloc, .{ .frame_length = MIN_FRAME_LENGTH });
+    defer pair.deinit(io);
+
+    var reader_buf: [512]u8 = undefined;
+    var responder_reader = pair.responder_stream.reader(io, &reader_buf);
+    const rdr = &responder_reader.interface;
+
+    var writer_buf: [512]u8 = undefined;
+    var initiator_writer = pair.initiator_stream.writer(io, &writer_buf);
+
+    var encrypted_writer = pair.initiator.encryptedWriter(&initiator_writer.interface);
+    const writer = &encrypted_writer.interface;
+
+    // Fill the frame first, so a `write_buf` that is not re-padded would still
+    // be holding this message when the short one goes out.
+    const long = try alloc.alloc(u8, pair.initiator.maxPayloadLength());
+    defer alloc.free(long);
+    @memset(long, 0xEE);
+
+    try writer.writeAll(long);
+    try writer.flush();
+    try testing.expectEqualSlices(u8, long, try pair.responder.recv(rdr));
+
+    try writer.writeAll("short");
+    try writer.flush();
+
+    const bytes = try pair.responder.recv(rdr);
+    try testing.expectEqualSlices(u8, "short", bytes);
+
+    // `recv` decrypts in place, so the padding that followed the payload is
+    // still sat in `read_buf`. It must be zeroes and not the tail of the
+    // previous message.
+    const plain_len = pair.responder.read_buf.len - AEAD_TAG_LENGTH;
+    for (pair.responder.read_buf[2 + bytes.len .. plain_len]) |b| {
+        try testing.expectEqual(@as(u8, 0), b);
+    }
+}
+
+test "encryptedWriter -- payload larger than a frame is rejected" {
+    const io = testing.io;
+    const alloc = testing.allocator;
+
+    var pair = try handshakePair(io, alloc, .{ .frame_length = MIN_FRAME_LENGTH });
+    defer pair.deinit(io);
+
+    const too_big = try alloc.alloc(u8, @as(usize, pair.initiator.maxPayloadLength()) + 1);
+    defer alloc.free(too_big);
+    @memset(too_big, 0x11);
+
+    var writer_buf: [512]u8 = undefined;
+    var initiator_writer = pair.initiator_stream.writer(io, &writer_buf);
+
+    var encrypted_writer = pair.initiator.encryptedWriter(&initiator_writer.interface);
+    const writer = &encrypted_writer.interface;
+
+    // `fixedDrain` refuses rather than silently splitting the payload over two
+    // frames, which the peer has no way to reassemble.
+    try testing.expectError(error.WriteFailed, writer.writeAll(too_big));
 }
