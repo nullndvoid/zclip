@@ -27,6 +27,7 @@ const Network = @import("../Network.zig");
 const CipherState = @import("CipherState.zig");
 const Error = CipherState.Error;
 pub const AEAD_TAG_LENGTH = CipherState.TAG_LENGTH;
+const EncryptedWriter = @import("EncryptedWriter.zig");
 const HandshakeState = @import("HandshakeState.zig");
 const Packet = @import("Packet.zig");
 
@@ -149,6 +150,17 @@ pub fn init(
     };
 }
 
+/// Returns an `EncryptedWriter` which encrypts data before forwarding
+/// them onto `sink`, which is probably a writer for a socket.
+///
+/// ## Warning
+///
+/// You should not retry a flush if this fails, since the buffer is
+/// already clobbered.
+pub fn encryptedWriter(self: *NoiseSession, sink: *Io.Writer) EncryptedWriter {
+    return .init(self, sink);
+}
+
 /// Performs the Noise handshake over `rdr` and `writer`.
 ///
 /// If `remote_pubkey` is not null, then you are the initiator.
@@ -252,11 +264,37 @@ pub fn maxPayloadLength(self: *const NoiseSession) u16 {
     return self.opts.frame_length - FRAME_OVERHEAD;
 }
 
-/// Transport frames are always exactly `opts.frame_length` bytes.
+/// Do not use this if you are using .writer(). Use .writer()!
 pub fn send(self: *NoiseSession, writer: *Io.Writer, data: []const u8) !void {
-    const bytes = try encryptWithAdFramed(&self.write, "", data, self.write_buf);
+    if (data.len > self.maxPayloadLength()) return error.InvalidLength;
+    @memcpy(self.write_buf[2..][0..data.len], data);
 
-    try writer.writeAll(bytes);
+    try self.sendBuffered(writer, data.len);
+}
+
+/// Do not use this if you are using .writer(). Use .writer()!
+///
+/// This is meant for use by EncryptedWriter!
+///
+/// Assumes the plaintext is sat in `write_buf[2..][0..len]`.
+/// Since len might not fill all padding space, we clear remaining
+/// bytes in `write_buf`.
+///
+/// Writes the length prefix, then encrypts the data in place.
+///
+/// Forwards this onto a writer sink.
+pub fn sendBuffered(self: *NoiseSession, writer: *Io.Writer, len: usize) !void {
+    if (len > self.maxPayloadLength()) return error.InvalidLength;
+
+    // Everything but the trailing AEAD tag.
+    const plain_len = self.write_buf.len - AEAD_TAG_LENGTH;
+
+    std.mem.writeInt(u16, self.write_buf[0..2], @intCast(len), .big);
+    @memset(self.write_buf[2 + len .. plain_len], 0);
+
+    _ = try self.write.aeadEncrypt("", self.write_buf[0..plain_len], self.write_buf);
+
+    try writer.writeAll(self.write_buf);
     try writer.flush();
 }
 
@@ -267,33 +305,6 @@ pub fn recv(self: *NoiseSession, rdr: *Io.Reader) ![]const u8 {
     return try decryptWithAdFramed(&self.read, "", self.read_buf, self.read_buf);
 }
 
-/// Sends some data, messagepack encoded.
-pub fn sendT(self: *NoiseSession, writer: *Io.Writer, alloc: Allocator, that: anytype) !void {
-    const data = try serde.msgpack.toSlice(alloc, that);
-    defer alloc.free(data);
-    try self.send(writer, data);
-}
-
-/// Receives some data, messagepack encoded. Performs no validation on the received data.
-pub fn recvT(self: *NoiseSession, comptime T: type, rdr: *Io.Reader, alloc: Allocator) !T {
-    const bytes = try self.recv(rdr);
-
-    return try serde.msgpack.fromSlice(T, alloc, bytes);
-}
-
-/// `ciphertext` doubles as the pad buffer: `plaintext` is padded into it,
-/// then encrypted in place. Its length fixes the frame size for this
-/// message, and therefore the max payload accepted (see `pad`).
-///
-/// Returned value is simply the same slice passed in for `ciphertext`.
-fn encryptWithAdFramed(self: *CipherState, ad: []const u8, plaintext: []const u8, ciphertext: []u8) Error![]const u8 {
-    const padded_plaintext = try pad(plaintext, ciphertext);
-
-    _ = try self.aeadEncrypt(ad, padded_plaintext, ciphertext);
-
-    return ciphertext;
-}
-
 /// `ciphertext` must be exactly `buf.len` bytes (the caller's fixed frame
 /// size) and may alias `buf`.
 fn decryptWithAdFramed(self: *CipherState, ad: []const u8, ciphertext: []const u8, buf: []u8) Error![]const u8 {
@@ -302,29 +313,6 @@ fn decryptWithAdFramed(self: *CipherState, ad: []const u8, ciphertext: []const u
     const n = try self.aeadDecrypt(ad, ciphertext, buf);
 
     return try unpad(buf[0..n]);
-}
-
-/// Pads the plaintext to a constant length equal to `buf.len - TAG_LENGTH`,
-/// prefixed with its actual length, so the ciphertext never varies in size
-/// regardless of payload length.
-///
-/// Returns `error.InvalidLength` if the input is larger than fits (i.e.
-/// larger than `buf.len - FRAME_OVERHEAD`). I will, in the future, packetise
-/// long inputs so this case shan't be reachable.
-///
-/// `buf` must be at least `FRAME_OVERHEAD` bytes; the returned slice is
-/// exactly `buf.len - AEAD_TAG_LENGTH` bytes.
-fn pad(plaintext: []const u8, buf: []u8) Error![]const u8 {
-    assert(buf.len > FRAME_OVERHEAD);
-    const plain_length = buf.len - AEAD_TAG_LENGTH;
-
-    if (plaintext.len > plain_length - 2) return error.InvalidLength;
-
-    std.crypto.secureZero(u8, buf[0..plain_length]);
-    std.mem.writeInt(u16, buf[0..2], @intCast(plaintext.len), .big);
-    @memcpy(buf[2..][0..plaintext.len], plaintext);
-
-    return buf[0..plain_length];
 }
 
 /// Given some decrypted, padded plaintext in `buf`, recovers the unpadded
