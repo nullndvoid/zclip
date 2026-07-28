@@ -36,13 +36,6 @@ alloc: Allocator,
 server: Io.net.Server,
 tasks: Io.Group,
 start_task: Io.Future(void),
-// /// Mapping from public keys to nicknames. If unexpected peers are found we can
-// /// warn the user and drop the connection.
-// peers: PeerMap,
-// /// A set of nicknames in the config.
-// nicks: std.StringHashMap(void),
-// /// Peers that this machine should attempt to connect to first.
-// to_connect: []const Peer,
 /// The list of peers this machine should attempt to connect to first.
 connectable: []const Peer,
 /// This daemon's identity.
