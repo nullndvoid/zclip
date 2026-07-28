@@ -37,6 +37,8 @@ const Io = std.Io;
 
 const DateTime = @This();
 
+pub const MAX_RFC3339_LENGTH = 29;
+
 /// Calendar year (e.g., 2023)
 year: u16,
 /// Month of the year (1-12)
