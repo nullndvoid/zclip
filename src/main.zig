@@ -160,22 +160,34 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
             data_dir,
         );
 
-        try select.concurrent(.daemon, runDaemon, .{
-            gpa.allocator(),
-            ident,
-            Daemon.Opts{
-                .socket_path = socket_path,
-                .inet = inet_cfg,
-                .data_dir = data_dir,
-            },
+        var daemon = Daemon.init(io, gpa.allocator(), ident, .{
+            .socket_path = socket_path,
+            .inet = inet_cfg,
+            .data_dir = data_dir,
         });
+        defer daemon.deinit();
 
-        const res = try select.await();
+        try select.concurrent(.daemon, Daemon.start, .{&daemon});
+
+        var res = try select.await();
+        if (res == .signal) {
+            daemon.stop();
+            interrupt_event.reset();
+            try select.concurrent(.signal, waitForInterrupt, .{});
+
+            res = try select.await();
+            if (res == .signal) {
+                log.warn("Interrupted again. Forcing shutdown.", .{});
+                select.cancelDiscard();
+                return;
+            }
+        }
+
         switch (res) {
             .daemon => |result| result catch |err| {
                 log.err("daemon exited with error: {t}", .{err});
             },
-            else => {},
+            .signal => {},
         }
 
         return;
@@ -295,13 +307,6 @@ fn waitForInterruptPosix() std.Io.Cancelable!void {
 
     try interrupt_event.wait(io);
     log.info("Got a signal, stopping gracefully...", .{});
-}
-
-fn runDaemon(alloc: Allocator, identity: Network.Identity, opts: Daemon.Opts) (std.Io.Cancelable || anyerror)!void {
-    var daemon = Daemon.init(io, alloc, identity, opts);
-    defer daemon.deinit();
-
-    try daemon.start();
 }
 
 test {

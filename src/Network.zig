@@ -29,19 +29,17 @@ const util = @import("util.zig");
 
 const log = std.log.scoped(.net);
 
-pub const PeerMap = std.StringHashMap([]const u8);
-
 io: Io,
 alloc: Allocator,
 server: Io.net.Server,
 tasks: Io.Group,
-start_task: Io.Future(void),
 /// The list of peers this machine should attempt to connect to first.
 connectable: []const Peer,
 /// This daemon's identity.
 identity: Identity,
 /// The database connection.
 repo: *Repo,
+shutdown: Io.Event = .unset,
 
 const Network = @This();
 
@@ -121,17 +119,9 @@ pub fn getConnectable(ident: Identity, peers: []const Peer, alloc: Allocator) ![
 
 pub fn init(io: Io, alloc: Allocator, identity: Identity, repo: *Repo, config: Config) !Network {
     const connectable = try getConnectable(identity, config.peers, alloc);
+    errdefer alloc.free(connectable);
 
-    {
-        var allocating = Io.Writer.Allocating.init(alloc);
-        const writer = &allocating.writer;
-        try config.bind_addr.format(writer);
-
-        const ip = try allocating.toOwnedSlice();
-        defer alloc.free(ip);
-
-        log.debug("Starting listener on {s}", .{ip});
-    }
+    log.debug("Starting listener on {f}", .{config.bind_addr});
 
     const server = try config.bind_addr.listen(io, .{
         .reuse_address = true,
@@ -142,11 +132,14 @@ pub fn init(io: Io, alloc: Allocator, identity: Identity, repo: *Repo, config: C
         .alloc = alloc,
         .server = server,
         .tasks = .init,
-        .start_task = undefined,
         .connectable = connectable,
         .identity = identity,
         .repo = repo,
     };
+}
+
+fn waitForShutdown(self: *Network) Io.Cancelable!void {
+    try self.shutdown.wait(self.io);
 }
 
 const Backoff = struct {
@@ -157,12 +150,23 @@ const Backoff = struct {
     attempts: usize = 1,
 
     /// Sleeps for the current delay, then advances to the next one.
-    fn wait(self: *Backoff, io: Io) error{Canceled}!void {
-        try io.sleep(.fromSeconds(delays_s[self.delay_idx]), .real);
-        if (self.delay_idx != delays_s.len - 1)
-            self.delay_idx += 1;
+    /// Returns `error.ShuttingDown` if `shutdown` is set while sleeping.
+    fn wait(self: *Backoff, io: Io, shutdown: *Io.Event) error{ Canceled, ShuttingDown }!void {
+        shutdown.waitTimeout(io, .{ .duration = .{
+            .raw = .fromSeconds(delays_s[self.delay_idx]),
+            .clock = .real,
+        } }) catch |err| switch (err) {
+            error.Timeout => {
+                if (self.delay_idx != delays_s.len - 1)
+                    self.delay_idx += 1;
 
-        self.attempts += 1;
+                self.attempts += 1;
+                return;
+            },
+            error.Canceled => return error.Canceled,
+        };
+
+        return error.ShuttingDown;
     }
 
     /// Jumps straight to the maximum delay.
@@ -175,7 +179,7 @@ const Backoff = struct {
     }
 };
 
-fn connectWithBackoff(self: *Network, host: Host, peer: Peer, backoff: *Backoff) error{Canceled}!Io.net.Stream {
+fn connectWithBackoff(self: *Network, host: Host, peer: Peer, backoff: *Backoff) error{ Canceled, ShuttingDown }!Io.net.Stream {
     while (true) {
         return host.hostname().connect(
             self.io,
@@ -191,7 +195,7 @@ fn connectWithBackoff(self: *Network, host: Host, peer: Peer, backoff: *Backoff)
                     log.debug("Cannot reach `{s}`. Attempt {d}. Retrying...", .{ peer.nickname, backoff.attempts });
                 }
 
-                try backoff.wait(self.io);
+                try backoff.wait(self.io, &self.shutdown);
                 continue;
             },
         };
@@ -205,7 +209,10 @@ fn connectToPeer(self: *Network, peer: Peer) error{Canceled}!void {
     var backoff = Backoff{};
 
     while (true) {
-        const stream = try self.connectWithBackoff(peer.host.?, peer, &backoff);
+        const stream = self.connectWithBackoff(peer.host.?, peer, &backoff) catch |err| switch (err) {
+            error.ShuttingDown => return,
+            error.Canceled => return error.Canceled,
+        };
         var conn_arena = Arena.init(self.alloc);
         defer conn_arena.deinit();
 
@@ -242,7 +249,10 @@ fn connectToPeer(self: *Network, peer: Peer) error{Canceled}!void {
 
                 backoff.failed = true;
                 backoff.saturate();
-                try backoff.wait(self.io);
+                backoff.wait(self.io, &self.shutdown) catch |wait_err| switch (wait_err) {
+                    error.ShuttingDown => return,
+                    error.Canceled => return error.Canceled,
+                };
                 continue;
             },
             else => {
@@ -255,8 +265,9 @@ fn connectToPeer(self: *Network, peer: Peer) error{Canceled}!void {
         defer session.deinit();
         defer stream.close(self.io);
 
-        self.processPackets(rdr, writer, &session, peer) catch |err| {
-            log.err("Processing packets failed. Reason: {t}", .{err});
+        self.processPackets(rdr, writer, &session, peer) catch |err| switch (err) {
+            error.Canceled => {},
+            else => log.err("Processing packets failed. Reason: {t}", .{err}),
         };
 
         return;
@@ -270,18 +281,28 @@ pub fn start(self: *Network) void {
     }
 
     for (self.connectable) |connectable| {
-        self.tasks.concurrent(self.io, connectToPeer, .{ self, connectable }) catch unreachable;
+        self.tasks.concurrent(self.io, connectToPeer, .{ self, connectable }) catch |err| switch (err) {
+            error.ConcurrencyUnavailable => log.err(
+                "No concurrency available to dial peer `{s}`. Skipping them.",
+                .{connectable.nickname},
+            ),
+        };
     }
 
-    self.start_task = self.io.concurrent(acceptConnections, .{self}) catch unreachable;
     log.debug("Started accepting connections", .{});
-    _ = self.start_task.await(self.io);
+    self.acceptConnections();
     log.debug("No longer accepting connections", .{});
+}
+
+/// Stop the accept loop (by cancelling `start`) before calling this, so no
+/// new connection tasks are spawned into the group while it is awaited.
+pub fn stop(self: *Network) void {
+    self.shutdown.set(self.io);
+    self.tasks.await(self.io) catch {};
 }
 
 pub fn deinit(self: *Network) void {
     self.tasks.cancel(self.io);
-    self.start_task.await(self.io);
     self.server.deinit(self.io);
     self.alloc.free(self.connectable);
 }
@@ -310,6 +331,8 @@ fn handleConnectionRw(self: *Network, rdr: *Io.Reader, writer: *Io.Writer) !void
         },
     };
 
+    defer session.deinit();
+
     // Check the peer is in DB.
     const peer = self.repo.getPeerByPubkey(&session.peer_pubkey, conn_arena.allocator()) catch |err| {
         switch (err) {
@@ -324,40 +347,81 @@ fn handleConnectionRw(self: *Network, rdr: *Io.Reader, writer: *Io.Writer) !void
         return err;
     };
 
-    defer session.deinit();
-
     try self.processPackets(rdr, writer, &session, peer);
 }
 
-fn processPackets(self: *Network, rdr: *Io.Reader, writer: *Io.Writer, session: *NoiseSession, peer: Peer) !void {
+fn processPackets(self: *Network, rdr: *Io.Reader, socket_writer: *Io.Writer, session: *NoiseSession, peer: Peer) !void {
     log.debug(
         "Encrypted connection established with peer #{d} ({s})",
         .{ peer.id, peer.nickname },
     );
 
-    _ = writer; // autofix
-    var packet_arena = Arena.init(self.alloc);
-    defer packet_arena.deinit();
+    var encrypted_writer = session.encryptedWriter(socket_writer);
+    const writer = &encrypted_writer.interface;
+
+    const Task = union(enum) { read: anyerror!void, shutdown: Io.Cancelable!void };
+    var buf: [2]Task = undefined;
+    var select = Io.Select(Task).init(self.io, &buf);
+    defer select.cancelDiscard();
+
+    try select.concurrent(.shutdown, waitForShutdown, .{self});
+    try select.concurrent(
+        .read,
+        packetReadLoop,
+        .{ rdr, writer, session, peer },
+    );
+
+    switch (try select.await()) {
+        .read => |result| try result,
+        .shutdown => {
+            select.cancelDiscard();
+
+            const packet = Packet.init(self.io, 0, .shutting_down);
+            sendGoodbye(packet, writer) catch |err| {
+                log.debug("Could not send shutdown packet to peer #{d} ({s}): {t}", .{ peer.id, peer.nickname, err });
+            };
+        },
+    }
+}
+
+fn sendGoodbye(packet: Packet, writer: *Io.Writer) !void {
+    try packet.encode(writer);
+    try writer.flush();
+}
+
+/// `writer` already handles encryption, you need only pass this to
+/// `Packet.encode` and flush.
+fn packetReadLoop(rdr: *Io.Reader, writer: *Io.Writer, session: *NoiseSession, peer: Peer) anyerror!void {
+    _ = writer; // Used once payload types that warrant replies are handled.
 
     while (true) {
-        defer _ = packet_arena.reset(.retain_capacity);
-
-        const packet = session.recvT(Packet, rdr, packet_arena.allocator()) catch |err| {
-            switch (err) {
-                error.EndOfStream => break,
-                else => {},
-            }
-
-            log.err("Could not read packet from peer `{s}`. Reason: {t}", .{ peer.nickname, err });
-
-            return err;
+        const bytes = session.recv(rdr) catch |err| switch (err) {
+            error.EndOfStream => return,
+            else => return err,
         };
 
-        log.debug("Got packet! {any}", .{packet});
+        const packet = try Packet.decode(bytes);
+
+        log.debug("Peer #{d} sent packet\n{f}", .{ peer.id, packet });
+
+        switch (packet.payload) {
+            .shutting_down => {
+                log.info("Peer #{d} ({s}) is shutting down. Terminating connection!", .{ peer.id, peer.nickname });
+                return;
+            },
+
+            // TODO: Handle the remaining payload types.
+            else => log.warn(
+                "Peer #{d} ({s}) sent an unhandled `{t}` packet. Ignoring it.",
+                .{ peer.id, peer.nickname, std.meta.activeTag(packet.payload) },
+            ),
+        }
     }
 }
 
 fn handleConnection(self: *Network, stream: Io.net.Stream) void {
+    defer stream.close(self.io);
+
     var read_buf: [4096]u8 = undefined;
     var write_buf: [4096]u8 = undefined;
 
@@ -368,10 +432,10 @@ fn handleConnection(self: *Network, stream: Io.net.Stream) void {
     const writer = &sock_writer.interface;
 
     self.handleConnectionRw(rdr, writer) catch |err| {
-        // switch (err) {
-        //     error.Canceled => return,
-        //     else => {},
-        // }
+        switch (err) {
+            error.Canceled => return,
+            else => {},
+        }
 
         log.err("TCP connection handler errored. Reason: {t}", .{err});
     };
@@ -387,8 +451,6 @@ fn handleConnection(self: *Network, stream: Io.net.Stream) void {
 }
 
 fn acceptConnections(self: *Network) void {
-    defer self.tasks.cancel(self.io);
-
     while (true) {
         const stream = self.server.accept(self.io) catch |err| switch (err) {
             error.Canceled => {
@@ -402,7 +464,9 @@ fn acceptConnections(self: *Network) void {
 
         log.debug("Accepted inet connection from peer", .{});
 
-        self.tasks.concurrent(self.io, handleConnection, .{ self, stream }) catch unreachable;
+        self.tasks.concurrent(self.io, handleConnection, .{ self, stream }) catch |err| switch (err) {
+            error.ConcurrencyUnavailable => stream.close(self.io),
+        };
     }
 }
 

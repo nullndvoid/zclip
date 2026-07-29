@@ -78,7 +78,6 @@ io: Io,
 alloc: Allocator,
 server: Io.net.Server,
 tasks: Io.Group,
-start_task: Io.Future(void),
 socket_path: []const u8,
 identity: Network.Identity,
 repo: *Repo,
@@ -91,6 +90,7 @@ pub fn init(
     identity: Network.Identity,
     repo: *Repo,
 ) !UnixSocket {
+    Io.Dir.cwd().deleteFile(io, socket_path) catch {};
     var addr = try Io.net.UnixAddress.init(socket_path);
     const server = try addr.listen(io, .{});
 
@@ -100,7 +100,6 @@ pub fn init(
         .alloc = alloc,
         .server = server,
         .tasks = .init,
-        .start_task = undefined,
         .socket_path = socket_path,
         .identity = identity,
         .repo = repo,
@@ -109,9 +108,8 @@ pub fn init(
 
 /// Blocking.
 pub fn start(self: *UnixSocket) void {
-    self.start_task = self.io.concurrent(acceptConnections, .{self}) catch unreachable;
     log.debug("Started accepting connections", .{});
-    _ = self.start_task.await(self.io);
+    self.acceptConnections();
     log.debug("No longer accepting connections", .{});
 }
 
@@ -119,20 +117,12 @@ pub fn deinit(self: *UnixSocket) void {
     self.tasks.cancel(self.io);
     self.server.deinit(self.io);
 
-    const path = self.alloc.dupeSentinel(u8, self.socket_path, 0) catch unreachable;
-    defer self.alloc.free(path);
-    if (@import("builtin").os.tag != .windows) {
-        if (std.c.unlink(path) == -1) {
-            log.err("Failed to unlink socket file! Please delete it manually at {s}", .{self.socket_path});
-        }
-    }
+    Io.Dir.cwd().deleteFile(self.io, self.socket_path) catch {
+        log.err("Failed to unlink socket file! Please delete it manually at {s}", .{self.socket_path});
+    };
 }
 
 pub fn acceptConnections(self: *UnixSocket) void {
-    var group = Io.Group.init;
-
-    defer group.cancel(self.io);
-
     while (true) {
         const stream = self.server.accept(self.io) catch |err| {
             switch (err) {
@@ -150,7 +140,7 @@ pub fn acceptConnections(self: *UnixSocket) void {
 
         log.debug("Accepted UNIX socket connection", .{});
 
-        group.concurrent(self.io, handleConnection, .{ self, stream }) catch |err| {
+        self.tasks.concurrent(self.io, handleConnection, .{ self, stream }) catch |err| {
             switch (err) {
                 error.ConcurrencyUnavailable => stream.close(self.io),
             }
@@ -162,7 +152,7 @@ pub fn acceptConnections(self: *UnixSocket) void {
 ///
 /// Commands are prefixed by their Content-Size, this does not include the Content-Size (u64) itself.
 /// Commands are all sent in network (big endian) byte ordering.
-fn handleConnection(self: *UnixSocket, stream: Io.net.Stream) !void {
+fn handleConnection(self: *UnixSocket, stream: Io.net.Stream) void {
     defer stream.close(self.io);
 
     var read_buf: [4096]u8 = undefined;
@@ -311,10 +301,4 @@ pub fn writeCommandFramed(writer: *Io.Writer, alloc: Allocator, command: Command
     try writer.writeInt(u64, data.len, .big);
     try writer.writeAll(data);
     try writer.flush();
-}
-
-fn clipCallback(clip: *Clip, _: *void) anyerror!void {
-    if (!clip.is_text) return;
-
-    log.debug("Got clip {s}", .{clip.data});
 }

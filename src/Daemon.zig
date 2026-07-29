@@ -32,13 +32,16 @@ io: Io,
 start_arena: std.heap.ArenaAllocator,
 clipboard: ?Clipboard,
 select_tasks: ?Io.Select(TaskResults),
-select_tasks_buf: [2]TaskResults,
+select_tasks_buf: [3]TaskResults,
 identity: Network.Identity,
 repo: Repo,
+/// Set via `stop` to request a graceful shutdown.
+shutdown: Io.Event,
 
 const TaskResults = union(enum) {
     unix: void,
     inet: void,
+    stop: Io.Cancelable!void,
 };
 
 const log = std.log.scoped(.Daemon);
@@ -60,7 +63,18 @@ pub fn init(io: Io, alloc: Allocator, identity: Network.Identity, opts: Opts) Da
         .identity = identity,
         .repo = undefined,
         .start_arena = std.heap.ArenaAllocator.init(alloc),
+        .shutdown = .unset,
     };
+}
+
+/// Requests a graceful shutdown of a running daemon: every connected peer is
+/// sent a shutdown notice before `start` returns. Threadsafe.
+pub fn stop(self: *Daemon) void {
+    self.shutdown.set(self.io);
+}
+
+fn waitForStop(self: *Daemon) Io.Cancelable!void {
+    try self.shutdown.wait(self.io);
 }
 
 /// Starts the daemon worker, blocking. May be cancelled by a signal. See signal handling in `main.zig`.
@@ -74,9 +88,6 @@ pub fn start(self: *Daemon) !void {
     var net = try Network.init(self.io, self.alloc, self.identity, &self.repo, self.opts.inet);
     defer net.deinit();
 
-    self.select_tasks = .init(self.io, &self.select_tasks_buf);
-    defer self.select_tasks.?.cancelDiscard();
-
     std.debug.assert(self.clipboard != null);
     var unix = try UnixSocket.init(
         self.io,
@@ -88,17 +99,30 @@ pub fn start(self: *Daemon) !void {
     );
     defer unix.deinit();
 
+    self.select_tasks = .init(self.io, &self.select_tasks_buf);
+    defer self.select_tasks.?.cancelDiscard();
+
     try self.select_tasks.?.concurrent(.unix, UnixSocket.start, .{&unix});
 
     try self.select_tasks.?.concurrent(.inet, Network.start, .{
         &net,
     });
 
+    try self.select_tasks.?.concurrent(.stop, waitForStop, .{self});
+
     log.info("Listening on UNIX socket and TCP :{d}.", .{
         self.opts.inet.bind_addr.getPort(),
     });
 
-    _ = try self.select_tasks.?.await();
+    switch (try self.select_tasks.?.await()) {
+        .stop => log.debug("Stop requested. Shutting down gracefully...", .{}),
+        .unix => log.warn("UNIX socket listener exited. Shutting down...", .{}),
+        .inet => log.warn("Network listener exited. Shutting down...", .{}),
+    }
+
+    // Stop both accept loops first so no new connections appear.
+    self.select_tasks.?.cancelDiscard();
+    net.stop();
 }
 
 pub fn deinit(self: *Daemon) void {
