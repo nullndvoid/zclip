@@ -40,9 +40,14 @@ identity: Identity,
 /// The database connection.
 repo: *Repo,
 shutdown: Io.Event = .unset,
-/// Events are sent from the Unix socket handler when new peers are committed
-/// to DB.
-peer_added: *Io.Queue(Peer),
+/// Commands are sent from the Unix socket handler.
+///
+/// Owned by Daemon so no need to close.
+commands: *Io.Queue(Command),
+/// Guards the hashmap of active connections.
+active_conns_lock: Io.RwLock,
+/// Mapping between peer IDs and active connections.
+active_conns: std.AutoHashMap(u64, Io.Future(anyerror!void)),
 
 const Network = @This();
 
@@ -50,7 +55,6 @@ pub const DEFAULT_NET_PORT = 48500;
 
 pub const Config = struct {
     bind_addr: Io.net.IpAddress = .{ .ip4 = .unspecified(DEFAULT_NET_PORT) },
-    peers: []Peer = &.{},
 };
 
 pub const Host = struct {
@@ -120,8 +124,8 @@ pub fn getConnectable(ident: Identity, peers: []const Peer, alloc: Allocator) ![
     return try out.toOwnedSlice(alloc);
 }
 
-pub fn init(io: Io, alloc: Allocator, identity: Identity, repo: *Repo, peer_added: *Io.Queue(Peer), config: Config) !Network {
-    const connectable = try getConnectable(identity, config.peers, alloc);
+pub fn init(io: Io, alloc: Allocator, identity: Identity, repo: *Repo, peers: []const Peer, commands: *Io.Queue(Command), config: Config) !Network {
+    const connectable = try getConnectable(identity, peers, alloc);
     errdefer alloc.free(connectable);
 
     log.debug("Starting listener on {f}", .{config.bind_addr});
@@ -138,7 +142,9 @@ pub fn init(io: Io, alloc: Allocator, identity: Identity, repo: *Repo, peer_adde
         .connectable = connectable,
         .identity = identity,
         .repo = repo,
-        .peer_added = peer_added,
+        .commands = commands,
+        .active_conns = .init(alloc),
+        .active_conns_lock = .init,
     };
 }
 
@@ -325,6 +331,17 @@ pub fn deinit(self: *Network) void {
     self.tasks.cancel(self.io);
     self.server.deinit(self.io);
     self.alloc.free(self.connectable);
+
+    {
+        self.active_conns_lock.lockUncancelable(self.io);
+        defer self.active_conns_lock.unlock(self.io);
+        var conns = self.active_conns.valueIterator();
+        while (conns.next()) |c| {
+            c.cancel(self.io) catch {};
+        }
+
+        self.active_conns.clearAndFree();
+    }
 }
 
 /// The peer has our pubkey already. Set in the configs out of band. So it should encrypt a message.
@@ -370,7 +387,21 @@ fn handleConnectionRw(self: *Network, rdr: *Io.Reader, writer: *Io.Writer) !void
     try self.processPackets(rdr, writer, &session, peer);
 }
 
-fn processPackets(self: *Network, rdr: *Io.Reader, socket_writer: *Io.Writer, session: *NoiseSession, peer: Peer) !void {
+fn processPackets(self: *Network, rdr: *Io.Reader, socket_writer: *Io.Writer, session: *NoiseSession, peer: Peer) anyerror!void {
+    var future = try self.io.concurrent(processPacketsInner, .{ self, rdr, socket_writer, session, peer });
+
+    try self.registerConn(peer.id, future);
+    defer self.unregisterConn(peer.id);
+
+    return future.await(self.io) catch |err| {
+        // Futures aren't automatically canceled if await was canceled.
+        if (err == error.Canceled) _ = future.cancel(self.io) catch {};
+
+        return err;
+    };
+}
+
+fn processPacketsInner(self: *Network, rdr: *Io.Reader, socket_writer: *Io.Writer, session: *NoiseSession, peer: Peer) anyerror!void {
     log.debug(
         "Encrypted connection established with peer #{d} ({s})",
         .{ peer.id, peer.nickname },
@@ -415,10 +446,7 @@ fn packetReadLoop(rdr: *Io.Reader, writer: *Io.Writer, session: *NoiseSession, p
     _ = writer; // Used once payload types that warrant replies are handled.
 
     while (true) {
-        const bytes = session.recv(rdr) catch |err| switch (err) {
-            error.EndOfStream => return,
-            else => return err,
-        };
+        const bytes = try session.recv(rdr);
 
         const packet = try Packet.decode(bytes);
 
@@ -470,6 +498,18 @@ fn handleConnection(self: *Network, stream: Io.net.Stream) void {
     };
 }
 
+fn registerConn(self: *Network, peer_id: u64, future: Io.Future(anyerror!void)) !void {
+    try self.active_conns_lock.lock(self.io);
+    defer self.active_conns_lock.unlock(self.io);
+    try self.active_conns.put(peer_id, future);
+}
+
+fn unregisterConn(self: *Network, peer_id: u64) void {
+    self.active_conns_lock.lockUncancelable(self.io);
+    defer self.active_conns_lock.unlock(self.io);
+    _ = self.active_conns.remove(peer_id);
+}
+
 fn acceptAndMakeConns(self: *Network) !void {
     const SelectTask = union(enum) {
         accept: void,
@@ -479,7 +519,7 @@ fn acceptAndMakeConns(self: *Network) !void {
     var select = Io.Select(SelectTask).init(self.io, &select_buf);
 
     try select.concurrent(.accept, acceptConnections, .{self});
-    try select.concurrent(.make_conns, makeNewConns, .{self});
+    try select.concurrent(.make_conns, processCommands, .{self});
     defer select.cancelDiscard();
 
     switch (try select.await()) {
@@ -488,30 +528,54 @@ fn acceptAndMakeConns(self: *Network) !void {
     }
 }
 
-fn makeNewConns(self: *Network) Io.Cancelable!void {
+fn processCommands(self: *Network) Io.Cancelable!void {
     while (true) {
-        const peer = self.peer_added.getOne(self.io) catch |err| switch (err) {
+        const cmd = self.commands.getOne(self.io) catch |err| switch (err) {
             error.Canceled => return error.Canceled,
             // This is unreachable because the daemon does not close the queue
             // until it exits.
             error.Closed => unreachable,
         };
 
-        log.debug("New peer added: {f}", .{peer});
-
-        if (std.mem.order(u8, &self.identity.public_key, &peer.pubkey) != .gt) continue;
-
-        if (peer.host) |_| {
-            // Again, if this fails, maybe warnlog. The user might just need
-            // to restart their daemon.
-            self.tasks.concurrent(
-                self.io,
-                connectToPeer,
-                .{ self, peer },
-            ) catch continue;
-        } else {
-            log.warn("This is a bug! You are missing a host, but the other peer will not connect!\n\nPeer: {f}", .{peer});
+        switch (cmd) {
+            .peer_add => |peer| try self.handlePeerAdd(peer),
+            .peer_rm => |id| try self.handlePeerRm(id),
         }
+    }
+}
+
+fn handlePeerRm(self: *Network, id: u64) !void {
+    self.active_conns_lock.lock(self.io) catch return;
+    const removed = self.active_conns.fetchRemove(id);
+
+    // Unlock right away because on cleanup, connections will deregister
+    // themselves. We don't want to deadlock!
+    self.active_conns_lock.unlock(self.io);
+
+    if (removed) |kv| {
+        var future = kv.value;
+        _ = future.cancel(self.io) catch {};
+
+        log.debug("Cancelled in-flight connection for removed peer #{d}", .{id});
+    }
+}
+
+fn handlePeerAdd(self: *Network, peer: Peer) !void {
+    log.debug("New peer added: {f}", .{peer});
+
+    if (std.mem.order(u8, &self.identity.public_key, &peer.pubkey) != .gt) return;
+
+    if (peer.host) |_| {
+        self.tasks.concurrent(
+            self.io,
+            connectToPeer,
+            .{ self, peer },
+        ) catch {
+            log.err("Could not connect to ({f}) who was added. Consider restarting the daemon.", .{peer});
+            return;
+        };
+    } else {
+        log.warn("This is a bug! You are missing a host, but the other peer will not connect!\n\nPeer: {f}", .{peer});
     }
 }
 
@@ -534,6 +598,13 @@ fn acceptConnections(self: *Network) void {
         };
     }
 }
+
+pub const Command = union(enum) {
+    /// A `Peer` was added to the DB.
+    peer_add: Peer,
+    /// `Peer` was removed from the DB. This contains it's local ID.
+    peer_rm: u64,
+};
 
 /// Used internally.
 pub const Peer = struct {

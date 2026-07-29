@@ -85,9 +85,8 @@ tasks: Io.Group,
 socket_path: []const u8,
 identity: Network.Identity,
 repo: *Repo,
-/// Owned and closed by Daemon. Broadcasts to Network when new peers are
-/// added.
-peer_added: *Io.Queue(Network.Peer),
+/// Owned and closed by Daemon. Broadcasts commands to Network.
+commands: *Io.Queue(Network.Command),
 
 pub fn init(
     io: Io,
@@ -96,7 +95,7 @@ pub fn init(
     socket_path: []const u8,
     identity: Network.Identity,
     repo: *Repo,
-    peer_added: *Io.Queue(Network.Peer),
+    commands: *Io.Queue(Network.Command),
 ) !UnixSocket {
     var addr = try Io.net.UnixAddress.init(socket_path);
     const server = addr.listen(io, .{}) catch |err| {
@@ -119,8 +118,7 @@ pub fn init(
         .socket_path = socket_path,
         .identity = identity,
         .repo = repo,
-
-        .peer_added = peer_added,
+        .commands = commands,
     };
 }
 
@@ -272,7 +270,7 @@ fn handleConnectionRw(self: *UnixSocket, rdr: *Io.Reader, writer: *Io.Writer) !v
                 // committed to DB, but perhaps we can return a warning to
                 // the user.
                 peer.id = id;
-                self.peer_added.putOne(self.io, peer) catch {};
+                self.commands.putOne(self.io, .{ .peer_add = peer }) catch {};
 
                 break :blk cmd;
             },
@@ -284,6 +282,11 @@ fn handleConnectionRw(self: *UnixSocket, rdr: *Io.Reader, writer: *Io.Writer) !v
 
                     break :blk cmd;
                 };
+
+                self.commands.putOne(
+                    self.io,
+                    .{ .peer_rm = p.id },
+                ) catch {};
 
                 cmd = .Ok;
 

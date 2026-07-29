@@ -85,16 +85,23 @@ pub fn start(self: *Daemon) !void {
     self.repo = repo;
     defer self.repo.deinit();
 
-    var peer_added_buf: [1]Network.Peer = undefined;
-    var peer_added = Io.Queue(Network.Peer).init(&peer_added_buf);
-    defer peer_added.close(self.io);
+    const peers = try self.repo.getPeers(self.alloc);
+    defer {
+        for (peers) |p| self.alloc.free(p.nickname);
+        self.alloc.free(peers);
+    }
+
+    var command_buf: [1]Network.Command = undefined;
+    var commands = Io.Queue(Network.Command).init(&command_buf);
+    defer commands.close(self.io);
 
     var net = try Network.init(
         self.io,
         self.alloc,
         self.identity,
         &self.repo,
-        &peer_added,
+        peers,
+        &commands,
         self.opts.inet,
     );
     defer net.deinit();
@@ -107,7 +114,7 @@ pub fn start(self: *Daemon) !void {
         self.opts.socket_path,
         self.identity,
         &self.repo,
-        &peer_added,
+        &commands,
     );
     defer unix.deinit();
 
