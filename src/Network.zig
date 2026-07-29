@@ -204,7 +204,7 @@ fn connectWithBackoff(self: *Network, host: Host, peer: Peer, backoff: *Backoff)
 
 /// Attempts to connect to a peer, retrying with backoff, then services the
 /// connection until it closes. Only fails on cancellation; anything fatal for
-/// this one peer is logged and gives up quietly.
+/// this one peer is logged and starts retrying in case they reconnect.
 fn connectToPeer(self: *Network, peer: Peer) error{Canceled}!void {
     var backoff = Backoff{};
 
@@ -256,9 +256,14 @@ fn connectToPeer(self: *Network, peer: Peer) error{Canceled}!void {
                 continue;
             },
             else => {
-                log.err("Noise handshake with peer `{s}` failed: {t}. Closing the connection and giving up.", .{ peer.nickname, err });
+                log.err("Noise handshake with peer `{s}` failed: {t}. Closing the connection and retrying.", .{ peer.nickname, err });
                 stream.close(self.io);
-                return;
+
+                backoff.wait(self.io, &self.shutdown) catch |wait_err| switch (wait_err) {
+                    error.ShuttingDown => return,
+                    error.Canceled => return error.Canceled,
+                };
+                continue;
             },
         };
 
@@ -267,10 +272,21 @@ fn connectToPeer(self: *Network, peer: Peer) error{Canceled}!void {
 
         self.processPackets(rdr, writer, &session, peer) catch |err| switch (err) {
             error.Canceled => {},
-            else => log.err("Processing packets failed. Reason: {t}", .{err}),
+            else => {
+                log.err("Processing packets failed. Reason: {t}. Retrying.", .{err});
+
+                backoff.wait(self.io, &self.shutdown) catch |wait_err| switch (wait_err) {
+                    error.ShuttingDown => return,
+                    error.Canceled => return error.Canceled,
+                };
+                continue;
+            },
         };
 
-        return;
+        if (self.shutdown.isSet()) return;
+
+        backoff = Backoff{};
+        continue;
     }
 }
 
