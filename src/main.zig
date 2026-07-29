@@ -251,10 +251,25 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
 
                         try printPeers(peers, stdout_writer);
                     },
+                    .rm => |rm| {
+                        client.removePeer(rm.id) catch |err| {
+                            if (err == error.DaemonError) {
+                                log.err("Could not remove peer #{d}. Does it exist?", .{rm.id});
+                                std.process.exit(1);
+                            }
+
+                            return err;
+                        };
+                    },
                 }
             } else {
                 try ctx.writeHelp(help_cfg, writer);
             }
+        },
+        // TODO: Not implemented yet.
+        .status => {
+            log.err("Not implemented yet!", .{});
+            std.process.exit(1);
         },
     }
 }

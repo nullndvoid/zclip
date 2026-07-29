@@ -41,10 +41,12 @@ pub const PeerOpts = struct {
     action: ?union(enum) {
         add: PeerAdd,
         list: void,
+        rm: PeerRm,
 
         pub const help = .{
             .add = .{ .desc = "Add a peer by name and public key" },
             .list = .{ .desc = "List known peers" },
+            .rm = .{ .desc = "Remove a peer by ID" },
         };
 
         pub const PeerAdd = struct {
@@ -64,6 +66,18 @@ pub const PeerOpts = struct {
                 .usage = "peer add nickname publickey (optional hostname)",
             };
         };
+
+        pub const PeerRm = struct {
+            id: u64,
+
+            pub const positionals = .{
+                .id,
+            };
+
+            pub const help = .{
+                .usage = "peer rm id",
+            };
+        };
     },
 };
 
@@ -71,11 +85,14 @@ const Subcommand = union(enum) {
     daemon: DaemonOpts,
     peer: PeerOpts,
     ident: void,
+    // TODO: Not implemented yet.
+    status: void,
 
     pub const help = .{
         .daemon = .{ .desc = "Run the zclip daemon" },
         .peer = .{ .desc = "Manage trusted peers" },
         .ident = .{ .desc = "Gets public key to share with peers" },
+        .status = .{ .desc = "Show information about the running daemon" },
     };
 };
 

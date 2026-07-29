@@ -102,6 +102,11 @@ pub fn addPeer(self: *Client, peer: Network.Peer, force: bool) ClientError!void 
     _ = try self.sendCommand(.{ .PostPeer = .{ .peer = peer, .force = force } });
 }
 
+/// Removes a peer from the daemon by ID.
+pub fn removePeer(self: *Client, id: u64) ClientError!void {
+    _ = try self.sendCommand(.{ .RemovePeer = .{ .id = id } });
+}
+
 fn sendCommand(self: *Client, command: Command) !Command {
     var read_buf: [4096]u8 = undefined;
     var write_buf: [4096]u8 = undefined;

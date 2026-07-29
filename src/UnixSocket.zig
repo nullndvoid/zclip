@@ -52,6 +52,8 @@ pub const CommandType = enum {
     Peers,
     /// Client sends a new peer to add to the config.
     PostPeer,
+    /// Client wants a peer removed by ID.
+    RemovePeer,
     /// Generic response if the daemon processed what was sent.
     Ok,
     /// Contains an error message for debugging.
@@ -59,6 +61,7 @@ pub const CommandType = enum {
 };
 
 pub const PostPeerPayload = struct { peer: Network.Peer, force: bool };
+pub const RemovePeerPayload = struct { id: u64 };
 
 pub const Command = union(CommandType) {
     PostClip: Clip,
@@ -69,6 +72,7 @@ pub const Command = union(CommandType) {
     GetPeers,
     Peers: []const Network.Peer,
     PostPeer: PostPeerPayload,
+    RemovePeer: RemovePeerPayload,
     Ok,
     DaemonError: []const u8,
 };
@@ -269,6 +273,19 @@ fn handleConnectionRw(self: *UnixSocket, rdr: *Io.Reader, writer: *Io.Writer) !v
                 // the user.
                 peer.id = id;
                 self.peer_added.putOne(self.io, peer) catch {};
+
+                break :blk cmd;
+            },
+            .RemovePeer => |p| blk: {
+                var cmd: Command = undefined;
+
+                self.repo.removePeer(p.id) catch |err| {
+                    cmd = .{ .DaemonError = @errorName(err) };
+
+                    break :blk cmd;
+                };
+
+                cmd = .Ok;
 
                 break :blk cmd;
             },

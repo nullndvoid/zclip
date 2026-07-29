@@ -99,6 +99,22 @@ pub fn addPeer(
     return maybe_id.?.id;
 }
 
+/// Removes a peer by ID. Returns `error.NotFound` if no such peer exists.
+pub fn removePeer(repo: *Repo, id: u64) !void {
+    const stmt = try repo.db.prepare(
+        struct { id: u64 },
+        struct { id: u64 },
+        "DELETE FROM peers WHERE id = :id RETURNING id;",
+    );
+    defer stmt.finalize();
+    defer stmt.reset();
+
+    try stmt.bind(.{ .id = id });
+
+    const removed = try stmt.step();
+    if (removed == null) return error.NotFound;
+}
+
 pub fn getPeerById(repo: *Repo, id: u64) !Network.Peer {
     const select = try repo.db.prepare(
         struct { id: u64 },
