@@ -243,8 +243,6 @@ fn handleConnectionRw(self: *UnixSocket, rdr: *Io.Reader, writer: *Io.Writer) !v
                     addr = try std.fmt.allocPrint(self.alloc, "{f}", .{host});
                 }
 
-                log.debug("Converted host to {s}", .{addr});
-
                 self.repo.addPeer(.{
                     .addr = if (peer.host) |_| addr else null,
                     .nickname = peer.nickname,
