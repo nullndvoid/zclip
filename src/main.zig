@@ -86,6 +86,13 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
 
                 return;
             },
+            error.MissingPositional => {
+                log.err("{s}", .{diag.message});
+
+                try ctx.writeHelp(help_cfg, writer);
+
+                return;
+            },
             else => {},
         }
 
@@ -253,6 +260,11 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
 }
 
 fn printPeers(peers: []const Network.Peer, writer: *Io.Writer) !void {
+    if (peers.len == 0) {
+        try writer.print("There are no peers added. Try adding one with `zclip peer add`", .{});
+        try writer.flush();
+    }
+
     for (peers) |p| {
         const pubkey = util.encodeKey(p.pubkey);
 
