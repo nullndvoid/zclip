@@ -1,5 +1,9 @@
 # I will use this config file for testing peers connections.
 
+# Make sure the users accessing the socket are in the same group as the account
+# running the daemon.
+unix_socket_address = "./data/zclip_bob.sock"
+
 [debugging]
 # 1024 * 1024 * 512 = 512MB. Might be useful to set for debugging purposes. 
 # memory_limit = 536870912
@@ -8,11 +12,6 @@
 # You can optionally specify a port here. Defaults to 48500.
 bind_address = "127.0.0.1:48501"
 
-# Make sure the users accessing the socket are in the same group as the account
-# running the daemon.
-
-unix_socket_address = "./data/zclip_bob.sock"
 
 # This can be relative to cwd of the daemon/client, or absolute.
-
 data_dir = "./data"
