@@ -46,8 +46,8 @@ shutdown: Io.Event = .unset,
 commands: *Io.Queue(Command),
 /// Guards the hashmap of active connections.
 active_conns_lock: Io.RwLock,
-/// Mapping between peer IDs and active connections.
-active_conns: std.AutoHashMap(u64, Io.Future(anyerror!void)),
+/// Mapping between peer IDs and a per-connection "please stop" signal.
+active_conns: std.AutoHashMap(u64, *Io.Event),
 
 const Network = @This();
 
@@ -280,8 +280,15 @@ fn connectToPeer(self: *Network, peer: Peer) error{Canceled}!void {
         defer session.deinit();
         defer stream.close(self.io);
 
-        self.processPackets(rdr, writer, &session, peer) catch |err| switch (err) {
+        var encrypted_writer = session.encryptedWriter(writer);
+        const encwriter = &encrypted_writer.interface;
+
+        self.processPackets(rdr, encwriter, &session, peer) catch |err| switch (err) {
             error.Canceled => {},
+            error.PeerRemovedLocally, error.PeerDegraded => {
+                log.info("Will not retry peer `{s}`.", .{peer.nickname});
+                return;
+            },
             else => {
                 log.err("Processing packets failed. Reason: {t}. Retrying.", .{err});
 
@@ -331,17 +338,7 @@ pub fn deinit(self: *Network) void {
     self.tasks.cancel(self.io);
     self.server.deinit(self.io);
     self.alloc.free(self.connectable);
-
-    {
-        self.active_conns_lock.lockUncancelable(self.io);
-        defer self.active_conns_lock.unlock(self.io);
-        var conns = self.active_conns.valueIterator();
-        while (conns.next()) |c| {
-            c.cancel(self.io) catch {};
-        }
-
-        self.active_conns.clearAndFree();
-    }
+    self.active_conns.deinit();
 }
 
 /// The peer has our pubkey already. Set in the configs out of band. So it should encrypt a message.
@@ -370,11 +367,23 @@ fn handleConnectionRw(self: *Network, rdr: *Io.Reader, writer: *Io.Writer) !void
 
     defer session.deinit();
 
+    var encrypted_writer = session.encryptedWriter(writer);
+    const encwriter = &encrypted_writer.interface;
+
     // Check the peer is in DB.
     const peer = self.repo.getPeerByPubkey(&session.peer_pubkey, conn_arena.allocator()) catch |err| {
         switch (err) {
             error.NotFound => {
                 log.warn("Peer with pubkey {b64} was not found! Unknown connection.", .{&session.peer_pubkey});
+
+                const packet = Packet.init(
+                    self.io,
+                    0,
+                    .{ .err = .{ .tag = .PeerRemoved } },
+                );
+
+                try packet.encode(encwriter);
+                try encwriter.flush();
             },
             else => {
                 log.err("Something went wrong looking for peer with pubkey {b64} in DB! What: {t}.", .{ &session.peer_pubkey, err });
@@ -384,42 +393,31 @@ fn handleConnectionRw(self: *Network, rdr: *Io.Reader, writer: *Io.Writer) !void
         return err;
     };
 
-    try self.processPackets(rdr, writer, &session, peer);
+    try self.processPackets(rdr, encwriter, &session, peer);
 }
 
-fn processPackets(self: *Network, rdr: *Io.Reader, socket_writer: *Io.Writer, session: *NoiseSession, peer: Peer) anyerror!void {
-    var future = try self.io.concurrent(processPacketsInner, .{ self, rdr, socket_writer, session, peer });
+fn processPackets(self: *Network, rdr: *Io.Reader, writer: *Io.Writer, session: *NoiseSession, peer: Peer) anyerror!void {
+    var removed: Io.Event = .unset;
 
-    try self.registerConn(peer.id, future);
+    try self.registerConn(peer.id, &removed);
     defer self.unregisterConn(peer.id);
 
-    return future.await(self.io) catch |err| {
-        // Futures aren't automatically canceled if await was canceled.
-        if (err == error.Canceled) _ = future.cancel(self.io) catch {};
-
-        return err;
-    };
-}
-
-fn processPacketsInner(self: *Network, rdr: *Io.Reader, socket_writer: *Io.Writer, session: *NoiseSession, peer: Peer) anyerror!void {
     log.debug(
         "Encrypted connection established with peer #{d} ({s})",
         .{ peer.id, peer.nickname },
     );
 
-    var encrypted_writer = session.encryptedWriter(socket_writer);
-    const writer = &encrypted_writer.interface;
-
-    const Task = union(enum) { read: anyerror!void, shutdown: Io.Cancelable!void };
-    var buf: [2]Task = undefined;
+    const Task = union(enum) { read: anyerror!void, shutdown: Io.Cancelable!void, removed: Io.Cancelable!void };
+    var buf: [3]Task = undefined;
     var select = Io.Select(Task).init(self.io, &buf);
     defer select.cancelDiscard();
 
     try select.concurrent(.shutdown, waitForShutdown, .{self});
+    try select.concurrent(.removed, waitForRemoval, .{ &removed, self.io });
     try select.concurrent(
         .read,
         packetReadLoop,
-        .{ rdr, writer, session, peer },
+        .{ self, rdr, writer, session, peer },
     );
 
     switch (try select.await()) {
@@ -432,7 +430,18 @@ fn processPacketsInner(self: *Network, rdr: *Io.Reader, socket_writer: *Io.Write
                 log.debug("Could not send shutdown packet to peer #{d} ({s}): {t}", .{ peer.id, peer.nickname, err });
             };
         },
+        .removed => {
+            select.cancelDiscard();
+
+            log.info("Peer #{d} ({s}) was removed locally. Closing the connection.", .{ peer.id, peer.nickname });
+
+            return error.PeerRemovedLocally;
+        },
     }
+}
+
+fn waitForRemoval(removed: *Io.Event, io: Io) Io.Cancelable!void {
+    try removed.wait(io);
 }
 
 fn sendGoodbye(packet: Packet, writer: *Io.Writer) !void {
@@ -442,7 +451,7 @@ fn sendGoodbye(packet: Packet, writer: *Io.Writer) !void {
 
 /// `writer` already handles encryption, you need only pass this to
 /// `Packet.encode` and flush.
-fn packetReadLoop(rdr: *Io.Reader, writer: *Io.Writer, session: *NoiseSession, peer: Peer) anyerror!void {
+fn packetReadLoop(self: *Network, rdr: *Io.Reader, writer: *Io.Writer, session: *NoiseSession, peer: Peer) anyerror!void {
     _ = writer; // Used once payload types that warrant replies are handled.
 
     while (true) {
@@ -456,6 +465,21 @@ fn packetReadLoop(rdr: *Io.Reader, writer: *Io.Writer, session: *NoiseSession, p
             .shutting_down => {
                 log.info("Peer #{d} ({s}) is shutting down. Terminating connection!", .{ peer.id, peer.nickname });
                 return;
+            },
+            .err => |e| switch (e.tag) {
+                .PeerRemoved => {
+                    log.warn("Peer #{d} ({s}) asked us to stop connecting. Marking degraded.", .{ peer.id, peer.nickname });
+
+                    self.repo.updatePeerDegraded(peer.id, .remote_rejected) catch |db_err| {
+                        log.err("Failed to mark peer #{d} as degraded: {t}", .{ peer.id, db_err });
+                    };
+
+                    return error.PeerDegraded;
+                },
+                else => log.warn(
+                    "Peer #{d} ({s}) sent an unhandled error `{t}`. Ignoring it.",
+                    .{ peer.id, peer.nickname, e.tag },
+                ),
             },
 
             // TODO: Handle the remaining payload types.
@@ -498,10 +522,10 @@ fn handleConnection(self: *Network, stream: Io.net.Stream) void {
     };
 }
 
-fn registerConn(self: *Network, peer_id: u64, future: Io.Future(anyerror!void)) !void {
+fn registerConn(self: *Network, peer_id: u64, removed: *Io.Event) !void {
     try self.active_conns_lock.lock(self.io);
     defer self.active_conns_lock.unlock(self.io);
-    try self.active_conns.put(peer_id, future);
+    try self.active_conns.put(peer_id, removed);
 }
 
 fn unregisterConn(self: *Network, peer_id: u64) void {
@@ -553,10 +577,9 @@ fn handlePeerRm(self: *Network, id: u64) !void {
     self.active_conns_lock.unlock(self.io);
 
     if (removed) |kv| {
-        var future = kv.value;
-        _ = future.cancel(self.io) catch {};
+        kv.value.set(self.io);
 
-        log.debug("Cancelled in-flight connection for removed peer #{d}", .{id});
+        log.debug("Signalled removal to in-flight connection with peer #{d}", .{id});
     }
 }
 
@@ -630,5 +653,19 @@ pub const Peer = struct {
         try writer.print("{d} ", .{self.id});
         try writer.print("{s}", .{self.nickname});
         if (self.host) |host| try writer.print(" {f}", .{host});
+    }
+
+    /// Why the Peer is not currently connectable and we are refusing to keep
+    /// trying. Good to avoid spamming logs if you misconfigured something.
+    pub const DegradationReason = enum(u8) {
+        unrecognised_pubkey = 0,
+        remote_missing_our_pubkey = 1,
+        remote_rejected = 2,
+    };
+
+    // This is a reminder that if this trips, you might need to migrate the
+    // DB schema.
+    comptime {
+        std.debug.assert(@typeInfo(DegradationReason).@"enum".fields.len == 3);
     }
 };

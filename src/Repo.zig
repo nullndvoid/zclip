@@ -57,6 +57,16 @@ fn initSchema(db: sqlite.Database) !void {
     try db.exec(
         \\ CREATE UNIQUE INDEX IF NOT EXISTS peers_pubkey_idx ON peers (pubkey);
     , .{});
+
+    var self = Repo{ .db = db };
+    const version = try self.getSchemaVersion();
+
+    if (version < 1) {
+        std.debug.assert(version == 0);
+
+        try db.exec("ALTER TABLE peers ADD COLUMN degraded_reason VARCHAR DEFAULT NULL;", .{});
+        try self.incrementSchemaVersion(version);
+    }
 }
 
 pub fn deinit(repo: *Repo) void {
@@ -97,6 +107,55 @@ pub fn addPeer(
     };
 
     return maybe_id.?.id;
+}
+
+/// Sets a reason as to why a peer is degraded in status. i.e. We refuse to
+/// connect to them.
+pub fn updatePeerDegraded(repo: *Repo, id: u64, reason: ?Network.Peer.DegradationReason) !void {
+    const stmt = try repo.db.prepare(
+        struct { reason: ?Text, id: u64 },
+        struct { id: u64 },
+        "UPDATE peers SET degraded_reason = :reason WHERE id = :id RETURNING id;",
+    );
+    defer stmt.finalize();
+    defer stmt.reset();
+
+    try stmt.bind(.{
+        .id = id,
+        .reason = if (reason) |r| .{ .data = @tagName(r) } else null,
+    });
+
+    const res = try stmt.step();
+    if (res == null) return error.NotFound;
+}
+
+/// Returns the schema version of the DB for migrations.
+fn getSchemaVersion(repo: *Repo) !u64 {
+    const stmt = try repo.db.prepare(
+        struct {},
+        struct { version: u64 },
+        "PRAGMA user_version;",
+    );
+    defer stmt.finalize();
+    defer stmt.reset();
+
+    try stmt.bind(.{});
+
+    const version = try stmt.step();
+
+    return version.?.version;
+}
+
+/// Bumps the schema version.
+fn incrementSchemaVersion(repo: *Repo, current_version: u64) !void {
+    // More than healthy room and I like a good power of two.
+    var buf: [64]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buf);
+
+    try writer.print("PRAGMA user_version = {d};", .{current_version + 1});
+    const sql = writer.buffered();
+
+    try repo.db.exec(sql, .{});
 }
 
 /// Removes a peer by ID. Returns `error.NotFound` if no such peer exists.

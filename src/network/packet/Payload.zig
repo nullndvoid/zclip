@@ -91,7 +91,7 @@ pub const Payload = union(Tag) {
         /// For debugging purposes. May be displayed to the user.
         ///
         /// This will be displayed alongside the default message if present.
-        extra_context: ?[]const u8,
+        extra_context: ?[]const u8 = null,
     };
 };
 
@@ -99,6 +99,7 @@ pub const Payload = union(Tag) {
 pub fn errorMessage(err: ErrorTags) []const u8 {
     return switch (err) {
         .NoSuchId => "An ID was supplied in a request but did not exist.",
+        .PeerRemoved => "The connected peer removed this one.",
         else => "Invalid error tag set.",
     };
 }
@@ -110,6 +111,11 @@ pub fn errorMessage(err: ErrorTags) []const u8 {
 pub const ErrorTags = enum(u8) {
     /// An ID was supplied in a request but did not exist.
     NoSuchId = 0,
+    /// Sent when we no longer want this peer trying to connect, e.g. we
+    /// removed them, or the handshake succeeded but we don't recognize
+    /// their pubkey. Receiver should mark us degraded and stop retrying
+    /// until cleared.
+    PeerRemoved = 1,
     _,
 };
 
@@ -118,21 +124,6 @@ comptime {
         if (f.value > 127) @compileError("Top error tag bit is reserved!");
     }
 }
-
-pub const ByteSerialiseHelper = struct {
-    pub const WireType = []const u8;
-
-    const MAX_DISPLAY = 80;
-
-    pub fn serialize(bytes: []const u8) []const u8 {
-
-        // if (bytes.len < MAX_DISPLAY and )
-        var buf: [32]u8 = undefined;
-        var fixed = Io.Writer.fixed(&buf);
-
-        fixed.print("{d}", .{bytes.len});
-    }
-};
 
 /// A chunk in messages which may be packetised.
 pub const Chunk = struct {
