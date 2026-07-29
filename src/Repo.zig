@@ -133,7 +133,7 @@ pub fn updatePeerDegraded(repo: *Repo, id: u64, reason: ?Network.Peer.Degradatio
 fn getSchemaVersion(repo: *Repo) !u64 {
     const stmt = try repo.db.prepare(
         struct {},
-        struct { version: u64 },
+        struct { user_version: u64 },
         "PRAGMA user_version;",
     );
     defer stmt.finalize();
@@ -143,7 +143,7 @@ fn getSchemaVersion(repo: *Repo) !u64 {
 
     const version = try stmt.step();
 
-    return version.?.version;
+    return version.?.user_version;
 }
 
 /// Bumps the schema version.
