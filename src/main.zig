@@ -142,11 +142,6 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
         inet_cfg.bind_addr = ip;
     }
 
-    // TODO: Fetch peers from DB. Config should be static for the most part.
-    // if (cfg.daemon.peers) |peers| {
-    //     inet_cfg.peers = peers;
-    // }
-
     if (cli_opts.bind_addr) |addr| {
         inet_cfg.bind_addr = addr.addr;
     }
