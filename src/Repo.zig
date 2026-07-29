@@ -63,21 +63,22 @@ pub fn deinit(repo: *Repo) void {
     repo.db.close();
 }
 
+/// Adds a peer and returns their ID.
 pub fn addPeer(
     repo: *Repo,
     peer: struct { nickname: []const u8, addr: ?[]const u8, pubkey: []const u8 },
     force: bool,
-) !void {
+) !u64 {
     const sql = if (force)
-        \\INSERT INTO peers (nickname, addr, pubkey) VALUES (:nickname, :addr, :pubkey)
+        \\INSERT INTO peers (nickname, addr, pubkey) VALUES (:nickname, :addr, :pubkey) RETURNING id
         \\ON CONFLICT (pubkey) DO UPDATE SET nickname = excluded.nickname, addr = excluded.addr;
     else
-        \\INSERT INTO peers (nickname, addr, pubkey) VALUES (:nickname, :addr, :pubkey);
+        \\INSERT INTO peers (nickname, addr, pubkey) VALUES (:nickname, :addr, :pubkey) RETURNING id;
     ;
 
     const stmt = try repo.db.prepare(
         struct { nickname: Text, addr: ?Text, pubkey: Text },
-        void,
+        struct { id: u64 },
         sql,
     );
     defer stmt.finalize();
@@ -89,10 +90,13 @@ pub fn addPeer(
         .pubkey = .{ .data = peer.pubkey },
     });
 
-    _ = stmt.step() catch |err| switch (err) {
+    // This won't be null.
+    const maybe_id = stmt.step() catch |err| switch (err) {
         error.SQLITE_CONSTRAINT => return error.PeerExists,
         else => return err,
     };
+
+    return maybe_id.?.id;
 }
 
 pub fn getPeerById(repo: *Repo, id: u64) !Network.Peer {

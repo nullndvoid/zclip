@@ -39,8 +39,8 @@ repo: Repo,
 shutdown: Io.Event,
 
 const TaskResults = union(enum) {
-    unix: void,
-    inet: void,
+    unix: anyerror!void,
+    inet: anyerror!void,
     stop: Io.Cancelable!void,
 };
 
@@ -85,7 +85,18 @@ pub fn start(self: *Daemon) !void {
     self.repo = repo;
     defer self.repo.deinit();
 
-    var net = try Network.init(self.io, self.alloc, self.identity, &self.repo, self.opts.inet);
+    var peer_added_buf: [1]Network.Peer = undefined;
+    var peer_added = Io.Queue(Network.Peer).init(&peer_added_buf);
+    defer peer_added.close(self.io);
+
+    var net = try Network.init(
+        self.io,
+        self.alloc,
+        self.identity,
+        &self.repo,
+        &peer_added,
+        self.opts.inet,
+    );
     defer net.deinit();
 
     std.debug.assert(self.clipboard != null);
@@ -96,6 +107,7 @@ pub fn start(self: *Daemon) !void {
         self.opts.socket_path,
         self.identity,
         &self.repo,
+        &peer_added,
     );
     defer unix.deinit();
 

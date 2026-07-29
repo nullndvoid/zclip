@@ -40,6 +40,9 @@ identity: Identity,
 /// The database connection.
 repo: *Repo,
 shutdown: Io.Event = .unset,
+/// Events are sent from the Unix socket handler when new peers are committed
+/// to DB.
+peer_added: *Io.Queue(Peer),
 
 const Network = @This();
 
@@ -117,7 +120,7 @@ pub fn getConnectable(ident: Identity, peers: []const Peer, alloc: Allocator) ![
     return try out.toOwnedSlice(alloc);
 }
 
-pub fn init(io: Io, alloc: Allocator, identity: Identity, repo: *Repo, config: Config) !Network {
+pub fn init(io: Io, alloc: Allocator, identity: Identity, repo: *Repo, peer_added: *Io.Queue(Peer), config: Config) !Network {
     const connectable = try getConnectable(identity, config.peers, alloc);
     errdefer alloc.free(connectable);
 
@@ -135,6 +138,7 @@ pub fn init(io: Io, alloc: Allocator, identity: Identity, repo: *Repo, config: C
         .connectable = connectable,
         .identity = identity,
         .repo = repo,
+        .peer_added = peer_added,
     };
 }
 
@@ -291,7 +295,7 @@ fn connectToPeer(self: *Network, peer: Peer) error{Canceled}!void {
 }
 
 /// Starts the Network workers. Blocking. May be cancelled as required.
-pub fn start(self: *Network) void {
+pub fn start(self: *Network) !void {
     if (self.connectable.len >= 1) {
         log.debug("Sending outbound connection requests to {d} peers", .{self.connectable.len});
     }
@@ -306,7 +310,7 @@ pub fn start(self: *Network) void {
     }
 
     log.debug("Started accepting connections", .{});
-    self.acceptConnections();
+    try self.acceptAndMakeConns();
     log.debug("No longer accepting connections", .{});
 }
 
@@ -466,6 +470,51 @@ fn handleConnection(self: *Network, stream: Io.net.Stream) void {
     };
 }
 
+fn acceptAndMakeConns(self: *Network) !void {
+    const SelectTask = union(enum) {
+        accept: void,
+        make_conns: Io.Cancelable!void,
+    };
+    var select_buf: [2]SelectTask = undefined;
+    var select = Io.Select(SelectTask).init(self.io, &select_buf);
+
+    try select.concurrent(.accept, acceptConnections, .{self});
+    try select.concurrent(.make_conns, makeNewConns, .{self});
+    defer select.cancelDiscard();
+
+    switch (try select.await()) {
+        .make_conns => |ret| try ret,
+        else => {},
+    }
+}
+
+fn makeNewConns(self: *Network) Io.Cancelable!void {
+    while (true) {
+        const peer = self.peer_added.getOne(self.io) catch |err| switch (err) {
+            error.Canceled => return error.Canceled,
+            // This is unreachable because the daemon does not close the queue
+            // until it exits.
+            error.Closed => unreachable,
+        };
+
+        log.debug("New peer added: {f}", .{peer});
+
+        if (std.mem.order(u8, &self.identity.public_key, &peer.pubkey) != .gt) continue;
+
+        if (peer.host) |_| {
+            // Again, if this fails, maybe warnlog. The user might just need
+            // to restart their daemon.
+            self.tasks.concurrent(
+                self.io,
+                connectToPeer,
+                .{ self, peer },
+            ) catch continue;
+        } else {
+            log.warn("This is a bug! You are missing a host, but the other peer will not connect!\n\nPeer: {f}", .{peer});
+        }
+    }
+}
+
 fn acceptConnections(self: *Network) void {
     while (true) {
         const stream = self.server.accept(self.io) catch |err| switch (err) {
@@ -502,4 +551,13 @@ pub const Peer = struct {
     /// Globally unique IDs could be generated using a hash of one's own public
     /// key.
     id: u64 = 0,
+
+    pub fn format(
+        self: @This(),
+        writer: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
+        try writer.print("{d} ", .{self.id});
+        try writer.print("{s}", .{self.nickname});
+        if (self.host) |host| try writer.print(" {f}", .{host});
+    }
 };

@@ -81,6 +81,9 @@ tasks: Io.Group,
 socket_path: []const u8,
 identity: Network.Identity,
 repo: *Repo,
+/// Owned and closed by Daemon. Broadcasts to Network when new peers are
+/// added.
+peer_added: *Io.Queue(Network.Peer),
 
 pub fn init(
     io: Io,
@@ -89,10 +92,19 @@ pub fn init(
     socket_path: []const u8,
     identity: Network.Identity,
     repo: *Repo,
+    peer_added: *Io.Queue(Network.Peer),
 ) !UnixSocket {
-    Io.Dir.cwd().deleteFile(io, socket_path) catch {};
     var addr = try Io.net.UnixAddress.init(socket_path);
-    const server = try addr.listen(io, .{});
+    const server = addr.listen(io, .{}) catch |err| {
+        switch (err) {
+            error.AddressInUse => {
+                log.err("Socket file is already in use! Please stop other running instances of the daemon!", .{});
+
+                return err;
+            },
+            else => return err,
+        }
+    };
 
     return .{
         .io = io,
@@ -103,6 +115,8 @@ pub fn init(
         .socket_path = socket_path,
         .identity = identity,
         .repo = repo,
+
+        .peer_added = peer_added,
     };
 }
 
@@ -217,7 +231,7 @@ fn handleConnectionRw(self: *UnixSocket, rdr: *Io.Reader, writer: *Io.Writer) !v
                 break :blk cmd;
             },
             .PostPeer => |p| blk: {
-                const peer = p.peer;
+                var peer = p.peer;
                 const force = p.force;
 
                 var cmd: Command = undefined;
@@ -233,7 +247,7 @@ fn handleConnectionRw(self: *UnixSocket, rdr: *Io.Reader, writer: *Io.Writer) !v
                     addr = try std.fmt.allocPrint(self.alloc, "{f}", .{host});
                 }
 
-                self.repo.addPeer(.{
+                const id = self.repo.addPeer(.{
                     .addr = if (peer.host) |_| addr else null,
                     .nickname = peer.nickname,
                     .pubkey = &pubkey_b64,
@@ -243,7 +257,18 @@ fn handleConnectionRw(self: *UnixSocket, rdr: *Io.Reader, writer: *Io.Writer) !v
                     break :blk cmd;
                 };
 
+                // We should try to ignore errors here since we did commit to
+                // DB, but I want to push an event to the Network handler to
+                // tell it to start trying to connect to a new peer.
+                errdefer comptime unreachable;
+
                 cmd = .Ok;
+
+                // TODO: We don't particularly care if this failed because we
+                // committed to DB, but perhaps we can return a warning to
+                // the user.
+                peer.id = id;
+                self.peer_added.putOne(self.io, peer) catch {};
 
                 break :blk cmd;
             },
