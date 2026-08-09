@@ -23,7 +23,7 @@ const known = @import("known-folders");
 const Serde = @import("serde");
 
 const BACKEND_ALLOC_LIMIT_DEFAULT = 1024 * 1024 * 512;
-const IS_DEBUG = @import("builtin").mode == .Debug;
+const IS_DEBUG = @import("builtin").mode == .debug;
 
 const log = std.log.scoped(.config);
 

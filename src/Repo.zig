@@ -210,9 +210,12 @@ pub fn getPeerByPubkey(repo: *Repo, pubkey: []const u8, alloc: Allocator) !Netwo
     return net_peer;
 }
 
-/// Caller should free returned slice once done with it using alloc.
-pub fn getPeers(repo: *Repo, alloc: Allocator) ![]const Network.Peer {
-    const select = try repo.db.prepare(struct {}, models.NetworkPeer, "SELECT * FROM peers;");
+fn getPeersSql(repo: *Repo, alloc: Allocator, sql: []const u8) ![]const Network.Peer {
+    const select = try repo.db.prepare(
+        struct {},
+        models.NetworkPeer,
+        sql,
+    );
     defer select.finalize();
 
     defer select.reset();
@@ -226,6 +229,22 @@ pub fn getPeers(repo: *Repo, alloc: Allocator) ![]const Network.Peer {
     }
 
     return try out.toOwnedSlice(alloc);
+}
+
+/// Caller should free returned slice once done with it using alloc.
+pub fn getPeersNonDegraded(repo: *Repo, alloc: Allocator) ![]const Network.Peer {
+    return repo.getPeersSql(
+        alloc,
+        "SELECT * FROM peers WHERE degraded_reason IS NOT NULL;",
+    );
+}
+
+/// Caller should free returned slice once done with it using alloc.
+pub fn getPeers(repo: *Repo, alloc: Allocator) ![]const Network.Peer {
+    return repo.getPeersSql(
+        alloc,
+        "SELECT * FROM peers;",
+    );
 }
 
 /// Callers should probably use an arena or manually free all returned slices

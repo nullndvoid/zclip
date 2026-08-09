@@ -2,27 +2,27 @@
     .name = .zclip,
     .version = "0.1.0",
     .fingerprint = 0xf924c408964da219, // Changing this has security and trust implications.
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0-dev.1622+2b242157b",
     .dependencies = .{
         .known_folders = .{
-            .url = "git+https://github.com/ziglibs/known-folders.git#207c34a16e4365edc20d92c7892f962b3bed46e8",
-            .hash = "known_folders-0.0.0-Fy-PJsbKAACbDh9bBxR0MMThxZSS6A9RH4apWphNHY70",
+            .url = "git+https://github.com/ziglibs/known-folders.git#6da0d0c41b78b9ed2d34fa364fcb81b5ebece6c4",
+            .hash = "known_folders-0.0.0-Fy-PJiDLAAB98m3uYUzatrTb2mO2fpvwx2zpSroEtfbO",
         },
         .serde = .{
-            .url = "git+https://github.com/nullndvoid/serde.zig#8c37529de2d75c9cb610715507c5812f50640126",
-            .hash = "serde-1.0.1-1DszT4J0DQCrmlz97iSvTtJjQt0tv9zLuwSq5Ypf0Ewh",
+            .url = "git+https://github.com/nullndvoid/serde.zig#2005940abb8eba683261df3af90cc6aaeaa20eb1",
+            .hash = "serde-1.0.1-1DszTxmRDQDEJy7UTD-RIXbBzMktHi_XrTC3oVy99Fhn",
         },
         .sqlite = .{
-            .url = "https://github.com/nDimensional/zig-sqlite/archive/refs/tags/v0.4.0-3530100.tar.gz",
-            .hash = "sqlite-0.4.0-3530100-djiKTqCBAABomylmlMLWtzm9bE_8NQ1O7qVu6l9x6aP1",
+            .url = "git+https://github.com/nullndvoid/zig-sqlite#89238cb324f91a5a67a2d902c777dfa4ecd03b23",
+            .hash = "sqlite-0.4.0-3530100-djiKTnuGAADC0dFV1iiUUr1yKSacv9VDBrxfSjanK-_O",
         },
         .clipboard = .{
-            .url = "https://codeberg.org/nullndvoid/clipboard-zig/archive/v0.2.0.tar.gz",
-            .hash = "clipboard-0.2.0-kMlkMDU1AgDMjZO0Ycbp7rV-TX4Du6Q_H26ymNJpsloi",
+            .url = "git+https://codeberg.org/nullndvoid/clipboard-zig?ref=zig17#b72eee99fad366e488000d1a69652cae0f0cb37a",
+            .hash = "clipboard-0.2.1-kMlkMFU1AgCLpU5pxycPe4wNfuLoMctT4gr0x8Dp_Wy4",
         },
         .parseargv = .{
-            .url = "git+https://codeberg.org/nullndvoid/parseargv.git#a3c3c4da7dcd57bde9b3325bbad1a58bffa4b9ca",
-            .hash = "parseargv-0.1.0-nw70e0i4AQBN813mqMBJvUzVn-Up6yeen9V2U31-KFOf",
+            .url = "git+https://codeberg.org/nullndvoid/parseargv?ref=zig17#bb1d71efbb434366969983e2c0fef9b9e7fe16a4",
+            .hash = "parseargv-0.1.0-nw70ey7RAQDz63Q1RmMjdWapP_IZ7g7nNmcrHdXV6Cdx",
         },
     },
     .paths = .{

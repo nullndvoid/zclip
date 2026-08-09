@@ -17,7 +17,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 /// Runtime log level.
-pub var level: std.log.Level = if (builtin.mode == .Debug) .debug else .info;
+pub var level: std.log.Level = if (builtin.mode == .debug) .debug else .info;
 
 /// Installed as `std.Options.logFn`.
 pub fn logFn(

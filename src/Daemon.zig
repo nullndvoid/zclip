@@ -85,7 +85,7 @@ pub fn start(self: *Daemon) !void {
     self.repo = repo;
     defer self.repo.deinit();
 
-    const peers = try self.repo.getPeers(self.alloc);
+    const peers = try self.repo.getPeersNonDegraded(self.alloc);
     defer {
         for (peers) |p| self.alloc.free(p.nickname);
         self.alloc.free(peers);

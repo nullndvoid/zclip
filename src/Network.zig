@@ -666,6 +666,6 @@ pub const Peer = struct {
     // This is a reminder that if this trips, you might need to migrate the
     // DB schema.
     comptime {
-        std.debug.assert(@typeInfo(DegradationReason).@"enum".fields.len == 3);
+        std.debug.assert(@typeInfo(DegradationReason).@"enum".field_names.len == 3);
     }
 };

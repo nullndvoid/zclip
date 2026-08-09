@@ -120,8 +120,8 @@ pub const ErrorTags = enum(u8) {
 };
 
 comptime {
-    for (@typeInfo(ErrorTags).@"enum".fields) |f| {
-        if (f.value > 127) @compileError("Top error tag bit is reserved!");
+    for (@typeInfo(ErrorTags).@"enum".field_values) |fv| {
+        if (fv > 127) @compileError("Top error tag bit is reserved!");
     }
 }
 
@@ -135,13 +135,14 @@ pub const Chunk = struct {
 // Comptime check that Chunk fields are last. This encourages people to read and
 // write chunks last in the below serialisation/deser code.
 comptime {
-    for (@typeInfo(Payload).@"union".fields) |uf| {
-        const ti = @typeInfo(uf.type);
+    const union_info = @typeInfo(Payload).@"union";
+    for (union_info.field_names, union_info.field_types) |un, ut| {
+        const ti = @typeInfo(ut);
         if (ti != .@"struct") continue;
-        const fields = ti.@"struct".fields;
-        for (fields, 0..) |f, i| {
-            if (f.type == Chunk and i != fields.len - 1)
-                @compileError("Chunk must be the last field of Payload." ++ uf.name);
+        const fields = ti.@"struct".field_types;
+        for (fields, 0..) |ft, i| {
+            if (ft == Chunk and i != fields.len - 1)
+                @compileError("Chunk must be the last field of Payload." ++ un);
         }
     }
 }

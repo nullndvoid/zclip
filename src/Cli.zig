@@ -24,7 +24,7 @@ const clip = @import("clipboard");
 
 const Network = @import("Network.zig");
 
-const IS_DEBUG = @import("builtin").mode == .Debug;
+const IS_DEBUG = @import("builtin").mode == .debug;
 
 pub const DaemonOpts = struct {
     /// The path to the data directory to use.

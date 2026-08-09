@@ -12,11 +12,8 @@ pub fn build(b: *std.Build) void {
 
     exe_options.addOption([]const u8, "version", @import("build.zig.zon").version);
 
-    const git_rev = gitShortRev(b) catch |err| blk: {
-        std.log.debug("{t}", .{err});
-        break :blk null;
-    };
-    exe_options.addOption(?[]const u8, "git_rev", git_rev);
+    // TODO: Setup CI and have it pass this.
+    exe_options.addOption(?[]const u8, "git_rev", null);
 
     const parseargv = b.dependency("parseargv", .{
         .target = target,
@@ -46,8 +43,6 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
         }),
-        .use_llvm = true,
-        .use_lld = true,
     });
 
     exe.root_module.addImport("known-folders", known_folders.module("known-folders"));
@@ -64,8 +59,6 @@ pub fn build(b: *std.Build) void {
     const exe_check = b.addExecutable(.{
         .name = "zclip",
         .root_module = exe.root_module,
-        .use_llvm = true,
-        .use_lld = true,
     });
 
     const check = b.step("check", "Check if zclip application compiles.");
@@ -77,47 +70,14 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());
 
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
+    run_cmd.addPassthruArgs();
 
     const exe_tests = b.addTest(.{
         .root_module = exe.root_module,
-        .test_runner = .{
-            .mode = .simple,
-            .path = b.path("test_runner.zig"),
-        },
-        .use_llvm = true,
-        .use_lld = true,
     });
 
     const run_exe_tests = b.addRunArtifact(exe_tests);
 
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_exe_tests.step);
-}
-
-/// Returns the short commit hash of the current git HEAD, or errors.
-/// This is ok since I handled errors in build.
-fn gitShortRev(b: *std.Build) ![]const u8 {
-    const io = b.graph.io;
-    const alloc = b.allocator;
-
-    var result = std.process.spawn(io, .{
-        .argv = &.{ "git", "rev-parse", "--short", "HEAD" },
-        .cwd = .{ .dir = .cwd() },
-        .stdout = .pipe,
-    }) catch return error.ProcessSpawn;
-
-    var stdout = result.stdout orelse return error.NoStdout;
-    var stdout_buf: [128]u8 = undefined;
-    var file_rdr = stdout.reader(io, &stdout_buf);
-    const rdr = &file_rdr.interface;
-
-    const hash = try rdr.allocRemaining(alloc, .unlimited);
-
-    const term = try result.wait(io);
-    if (term.exited != 0) return error.GitFailed;
-
-    return std.mem.trim(u8, hash, " \t\r\n");
 }
