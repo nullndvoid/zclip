@@ -261,6 +261,10 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
                             return err;
                         };
                     },
+                    .edit => |edit| {
+                        _ = edit; // autofix
+                        @panic("TODO");
+                    },
                 }
             } else {
                 try ctx.writeHelp(help_cfg, writer);

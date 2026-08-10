@@ -42,11 +42,28 @@ pub const PeerOpts = struct {
         add: PeerAdd,
         list: void,
         rm: PeerRm,
+        edit: PeerEdit,
 
         pub const help = .{
             .add = .{ .desc = "Add a peer by name and public key" },
             .list = .{ .desc = "List known peers" },
             .rm = .{ .desc = "Remove a peer by ID" },
+            .edit = .{ .desc = "Edit a peers information by ID" },
+        };
+
+        pub const PeerEdit = struct {
+            /// The local ID of the peer to edit.
+            id: u64,
+            clear_degraded: bool = false,
+            pubkey: ?[]const u8 = null,
+            nick: ?[]const u8 = null,
+
+            pub const help = .{
+                .id = .{ .desc = "The local ID of the peer to edit." },
+                .clear_degraded = .{ .desc = "Unsets degraded status for the peer if set." },
+                .pubkey = .{ .desc = "The new public key for the peer." },
+                .nick = .{ .desc = "The new nickname for the peer." },
+            };
         };
 
         pub const PeerAdd = struct {
