@@ -2,6 +2,10 @@
 
 A tool to manage and sync your clipboard between devices.
 
+# Website
+
+See the project website [@nullndvoid.xyz](https://nullndvoid.xyz/projects/zclip). It doesn't currently contain much but I will eventually get around to populating it with documentation, as well as publishing devlogs on there.
+
 # TODOs
 
 - CLI interface for listing clipboard items
