@@ -13,8 +13,8 @@
             .hash = "serde-1.0.1-1DszTxmRDQDEJy7UTD-RIXbBzMktHi_XrTC3oVy99Fhn",
         },
         .sqlite = .{
-            .url = "git+https://github.com/nullndvoid/zig-sqlite#89238cb324f91a5a67a2d902c777dfa4ecd03b23",
-            .hash = "sqlite-0.4.0-3530100-djiKTnuGAADC0dFV1iiUUr1yKSacv9VDBrxfSjanK-_O",
+            .url = "git+https://github.com/nullndvoid/zig-sqlite#71ebac4d8c91e500f56e86c0b8d3ba02cf2122f0",
+            .hash = "sqlite-0.4.0-3530100-djiKTtqEAABZChA-_2bTHWfjWNrmAlXQ-UKsRbWlQt9v",
         },
         .clipboard = .{
             .url = "git+https://codeberg.org/nullndvoid/clipboard-zig?ref=zig17#b72eee99fad366e488000d1a69652cae0f0cb37a",
