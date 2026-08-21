@@ -1,0 +1,19 @@
+# This should be installed into .config/systemd/user for your user account.
+# Config is expected to be located at $XDG_CONFIG_HOME/zclip/zclip.toml.
+
+[Unit]
+Description=zclip clipboard management/sync daemon
+After=graphical-session.target
+PartOf=graphical-session.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=exec
+ExecStart=/usr/local/bin/zclip -v daemon
+Restart=on-failure
+RestartSec=3
+Slice=background.slice
+
+[Install]
+WantedBy=graphical-session.target
