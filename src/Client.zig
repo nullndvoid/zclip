@@ -107,6 +107,14 @@ pub fn removePeer(self: *Client, id: u64) ClientError!void {
     _ = try self.sendCommand(.{ .RemovePeer = .{ .id = id } });
 }
 
+/// Edits a peer by `peer_id`. Fields left unset in `edit_params` will not be
+/// unset or updated.
+pub fn editPeer(self: *Client, peer_id: u64, edit_params: UnixSocket.EditPeerParams) ClientError!void {
+    _ = try self.sendCommand(.{
+        .EditPeer = .{ .id = peer_id, .params = edit_params },
+    });
+}
+
 fn sendCommand(self: *Client, command: Command) !Command {
     var read_buf: [4096]u8 = undefined;
     var write_buf: [4096]u8 = undefined;

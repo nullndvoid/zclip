@@ -57,12 +57,22 @@ pub const PeerOpts = struct {
             clear_degraded: bool = false,
             pubkey: ?[]const u8 = null,
             nick: ?[]const u8 = null,
+            host: ?[]const u8 = null,
+            clear_host: bool = false,
 
             pub const help = .{
                 .id = .{ .desc = "The local ID of the peer to edit." },
                 .clear_degraded = .{ .desc = "Unsets degraded status for the peer if set." },
                 .pubkey = .{ .desc = "The new public key for the peer." },
                 .nick = .{ .desc = "The new nickname for the peer." },
+                .host = .{ .desc = "The new hostname for the peer." },
+                .clear_host = .{ .desc = "Clears the set hostname for the peer." },
+            };
+
+            pub const flags = .{
+                .nick = .{ .short = 'n' },
+                .pubkey = .{ .short = 'k' },
+                .host = .{ .short = 'i' },
             };
         };
 
@@ -128,6 +138,9 @@ pub const Opts = struct {
 
     pub const flags = .{
         .verbose = .{ .short = 'v' },
+        .config_path = .{ .short = 'c' },
+        .bind_addr = .{ .short = 'a' },
+        .socket_path = .{ .short = 'p' },
     };
 
     pub const help = .{

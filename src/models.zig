@@ -33,4 +33,7 @@ pub const NetworkPeer = struct {
     /// key. This might be friendlier than using nicknames, which aren't currently
     /// guaranteed to be unique anyway.
     id: u64 = 0,
+
+    /// A reason why the peer is marked degraded. This should be an enum tag name.
+    degraded_reason: ?Text,
 };

@@ -28,6 +28,14 @@ const util = @import("util.zig");
 
 const log = std.log.scoped(.zclip);
 
+/// Magic number is the length of our public keys when base64 encoded.
+///
+/// Validated by client but just in case we had some malicious or broken
+/// program, or regressions in the client, we should check this server side.
+///
+/// This reads like a clanker wrote it. It did not.
+const PUBKEY_LEN_B64 = 44;
+
 pub const std_options = std.Options{
     .log_level = .debug,
     .logFn = Log.logFn,
@@ -225,7 +233,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
 
                 switch (act) {
                     .add => |add| {
-                        if (add.pubkey.len != 44) {
+                        if (add.pubkey.len != PUBKEY_LEN_B64) {
                             log.err("Public key base64 has invalid length!", .{});
                             std.process.exit(1);
                         }
@@ -262,8 +270,25 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
                         };
                     },
                     .edit => |edit| {
-                        _ = edit; // autofix
-                        @panic("TODO");
+                        if (edit.pubkey) |pk| if (pk.len != PUBKEY_LEN_B64) {
+                            log.err("Public key base64 has invalid length!", .{});
+                            std.process.exit(1);
+                        };
+
+                        client.editPeer(edit.id, .{
+                            .clear_degraded = edit.clear_degraded,
+                            .pubkey = edit.pubkey,
+                            .nick = edit.nick,
+                            .host = edit.host,
+                            .clear_host = edit.clear_host,
+                        }) catch |err| {
+                            if (err == error.DaemonError) {
+                                log.err("Could not edit peer #{d}. See logs for reason.", .{edit.id});
+                                std.process.exit(1);
+                            }
+
+                            return err;
+                        };
                     },
                 }
             } else {

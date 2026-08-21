@@ -646,6 +646,9 @@ pub const Peer = struct {
     /// key.
     id: u64 = 0,
 
+    /// Set if the peer is marked as degraded.
+    degradation: ?DegradationReason = null,
+
     pub fn format(
         self: @This(),
         writer: *std.Io.Writer,
@@ -653,6 +656,7 @@ pub const Peer = struct {
         try writer.print("{d} ", .{self.id});
         try writer.print("{s}", .{self.nickname});
         if (self.host) |host| try writer.print(" {f}", .{host});
+        if (self.degradation) |d| try writer.print(" (degraded: {t})", .{d});
     }
 
     /// Why the Peer is not currently connectable and we are refusing to keep

@@ -23,6 +23,8 @@ pub const models = @import("models.zig");
 const Network = @import("Network.zig");
 const util = @import("util.zig");
 
+const log = std.log.scoped(.Repo);
+
 const Repo = @This();
 
 db: sqlite.Database,
@@ -129,6 +131,63 @@ pub fn updatePeerDegraded(repo: *Repo, id: u64, reason: ?Network.Peer.Degradatio
     if (res == null) return error.NotFound;
 }
 
+/// Sets the hostname of a peer by `id`. Errors if the peer does not exist.
+pub fn setPeerHostname(repo: *Repo, id: u64, hostname: ?[]const u8) !void {
+    const stmt = try repo.db.prepare(
+        struct { hostname: ?Text, id: u64 },
+        struct { id: u64 },
+        "UPDATE peers SET addr = :hostname WHERE id = :id RETURNING id;",
+    );
+    defer stmt.finalize();
+    defer stmt.reset();
+
+    try stmt.bind(.{
+        .id = id,
+        .hostname = if (hostname) |h| .{ .data = h } else null,
+    });
+
+    const res = try stmt.step();
+    if (res == null) return error.NotFound;
+}
+
+/// Sets the public key of a peer by `id`. Errors if the peer does not exist.
+pub fn setPeerPubkey(repo: *Repo, id: u64, pubkey: []const u8) !void {
+    const stmt = try repo.db.prepare(
+        struct { pubkey: Text, id: u64 },
+        struct { id: u64 },
+        "UPDATE peers SET pubkey = :pubkey WHERE id = :id RETURNING id;",
+    );
+    defer stmt.finalize();
+    defer stmt.reset();
+
+    try stmt.bind(.{
+        .id = id,
+        .pubkey = .{ .data = pubkey },
+    });
+
+    const res = try stmt.step();
+    if (res == null) return error.NotFound;
+}
+
+/// Sets the nickname of a peer by `id`. Errors if the peer does not exist.
+pub fn setPeerNickname(repo: *Repo, id: u64, nickname: []const u8) !void {
+    const stmt = try repo.db.prepare(
+        struct { nickname: Text, id: u64 },
+        struct { id: u64 },
+        "UPDATE peers SET nickname = :nickname WHERE id = :id RETURNING id;",
+    );
+    defer stmt.finalize();
+    defer stmt.reset();
+
+    try stmt.bind(.{
+        .id = id,
+        .nickname = .{ .data = nickname },
+    });
+
+    const res = try stmt.step();
+    if (res == null) return error.NotFound;
+}
+
 /// Returns the schema version of the DB for migrations.
 fn getSchemaVersion(repo: *Repo) !u64 {
     const stmt = try repo.db.prepare(
@@ -174,7 +233,48 @@ pub fn removePeer(repo: *Repo, id: u64) !void {
     if (removed == null) return error.NotFound;
 }
 
-pub fn getPeerById(repo: *Repo, id: u64) !Network.Peer {
+/// Returns true if the peer exists in DB.
+///
+/// See `peerExistsByPubkey` for a similar version using the public key.
+pub fn peerExistsById(repo: *Repo, id: u64) !bool {
+    const select = try repo.db.prepare(
+        struct { id: u64 },
+        struct { count: u64 },
+        "SELECT COUNT(1) AS count FROM peers WHERE id = :id;",
+    );
+    defer select.finalize();
+
+    defer select.reset();
+
+    try select.bind(.{ .id = id });
+    const res = try select.step() orelse unreachable;
+
+    return (res.count == 1);
+}
+
+/// Returns true if the peer exists in DB.
+///
+/// See `peerExistsById` for a similar version using the ID.
+pub fn peerExistsByPubkey(repo: *Repo, pubkey: []const u8) !bool {
+    const select = try repo.db.prepare(
+        struct { pubkey: Text },
+        struct { count: u64 },
+        "SELECT COUNT(1) AS count FROM peers WHERE pubkey = :pubkey;",
+    );
+    defer select.finalize();
+
+    defer select.reset();
+
+    try select.bind(.{ .pubkey = pubkey });
+    const res = try select.step() orelse unreachable;
+
+    return (res.count == 1);
+}
+
+/// The allocator could be an arena to avoid faffing about with cleanup.
+///
+/// See `peerExistsById` for a version that returns true if present in DB.
+pub fn getPeerById(repo: *Repo, id: u64, alloc: Allocator) !Network.Peer {
     const select = try repo.db.prepare(
         struct { id: u64 },
         models.NetworkPeer,
@@ -187,7 +287,7 @@ pub fn getPeerById(repo: *Repo, id: u64) !Network.Peer {
     try select.bind(.{ .id = id });
     const peer = try select.step() orelse return error.NotFound;
 
-    const net_peer = try toNetworkPeer(peer, repo.alloc);
+    const net_peer = try toNetworkPeer(peer, alloc);
 
     return net_peer;
 }
@@ -232,6 +332,8 @@ fn getPeersSql(repo: *Repo, alloc: Allocator, sql: []const u8) ![]const Network.
 }
 
 /// Caller should free returned slice once done with it using alloc.
+///
+/// Use an arena to avoid needing to free all slices in each Network peer.
 pub fn getPeersNonDegraded(repo: *Repo, alloc: Allocator) ![]const Network.Peer {
     return repo.getPeersSql(
         alloc,
@@ -240,6 +342,8 @@ pub fn getPeersNonDegraded(repo: *Repo, alloc: Allocator) ![]const Network.Peer 
 }
 
 /// Caller should free returned slice once done with it using alloc.
+///
+/// Use an arena to avoid needing to free all slices in each Network peer.
 pub fn getPeers(repo: *Repo, alloc: Allocator) ![]const Network.Peer {
     return repo.getPeersSql(
         alloc,
@@ -268,5 +372,30 @@ fn toNetworkPeer(peer: models.NetworkPeer, alloc: Allocator) !Network.Peer {
         .nickname = duped_nickname,
         .id = peer.id,
         .pubkey = pubkey[0..32].*,
+        .degradation = if (peer.degraded_reason) |r|
+            toDegradationReason(r.data, peer.id)
+        else
+            null,
     };
+}
+
+/// If unrecognised but still set in the DB for some reason, we just return
+/// `.remote_rejected` and log something.
+fn toDegradationReason(reason: ?[]const u8, id: u64) ?Network.Peer.DegradationReason {
+    if (reason == null) return null;
+
+    // If this trips, this function needs an update.
+    comptime {
+        std.debug.assert(
+            @typeInfo(Network.Peer.DegradationReason).@"enum".field_names.len == 3,
+        );
+    }
+
+    if (std.mem.eql(u8, reason.?, "unrecognised_pubkey")) return .unrecognised_pubkey;
+    if (std.mem.eql(u8, reason.?, "remote_missing_our_pubkey")) return .remote_missing_our_pubkey;
+    if (std.mem.eql(u8, reason.?, "remote_rejected")) return .remote_rejected;
+
+    log.warn("Unrecognised degradation reason in DB for peer ID {d}. Returning .remote_rejected for now.", .{id});
+
+    return .remote_rejected;
 }

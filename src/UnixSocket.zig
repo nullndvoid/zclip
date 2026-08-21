@@ -54,6 +54,8 @@ pub const CommandType = enum {
     PostPeer,
     /// Client wants a peer removed by ID.
     RemovePeer,
+    /// Client wants to edit a peer's details.
+    EditPeer,
     /// Generic response if the daemon processed what was sent.
     Ok,
     /// Contains an error message for debugging.
@@ -62,6 +64,14 @@ pub const CommandType = enum {
 
 pub const PostPeerPayload = struct { peer: Network.Peer, force: bool };
 pub const RemovePeerPayload = struct { id: u64 };
+pub const EditPeerParams = struct {
+    clear_degraded: bool = false,
+    pubkey: ?[]const u8 = null,
+    nick: ?[]const u8 = null,
+    host: ?[]const u8 = null,
+    clear_host: bool = false,
+};
+pub const EditPeerPayload = struct { id: u64, params: EditPeerParams };
 
 pub const Command = union(CommandType) {
     PostClip: Clip,
@@ -73,6 +83,7 @@ pub const Command = union(CommandType) {
     Peers: []const Network.Peer,
     PostPeer: PostPeerPayload,
     RemovePeer: RemovePeerPayload,
+    EditPeer: EditPeerPayload,
     Ok,
     DaemonError: []const u8,
 };
@@ -196,6 +207,14 @@ fn handleConnection(self: *UnixSocket, stream: Io.net.Stream) void {
     };
 }
 
+/// Magic number is the length of our public keys when base64 encoded.
+///
+/// Validated by client but just in case we had some malicious or broken
+/// program, or regressions in the client, we should check this server side.
+///
+/// This reads like a clanker wrote it. It did not.
+const PUBKEY_LEN_B64 = 44;
+
 fn handleConnectionRw(self: *UnixSocket, rdr: *Io.Reader, writer: *Io.Writer) !void {
     var arena = ArenaAllocator.init(self.alloc);
     defer arena.deinit();
@@ -216,6 +235,7 @@ fn handleConnectionRw(self: *UnixSocket, rdr: *Io.Reader, writer: *Io.Writer) !v
             },
         };
 
+        const reply_alloc = arena.allocator();
         const reply: Command = switch (command) {
             .GetPubkey => .{
                 .Pubkey = .{
@@ -229,6 +249,101 @@ fn handleConnectionRw(self: *UnixSocket, rdr: *Io.Reader, writer: *Io.Writer) !v
                     break :blk cmd;
                 };
                 cmd = .{ .Peers = peers };
+
+                break :blk cmd;
+            },
+            .EditPeer => |ep| blk: {
+                // Check the peer exists first.
+                var cmd: Command = .Ok;
+
+                const exists = self.repo.peerExistsById(ep.id) catch |err| {
+                    const err_str = try reply_alloc.print(
+                        "Peer ID {d}: failed to edit (tried checking peer exists). Why: {t}",
+                        .{ ep.id, err },
+                    );
+
+                    cmd = .{ .DaemonError = err_str };
+                    break :blk cmd;
+                };
+
+                if (!exists) {
+                    const err_str = try reply_alloc.print(
+                        "Peer ID {d} does not exist!",
+                        .{ep.id},
+                    );
+
+                    cmd = .{ .DaemonError = err_str };
+                    break :blk cmd;
+                }
+
+                if (ep.params.clear_degraded) {
+                    self.repo.updatePeerDegraded(ep.id, null) catch |err| {
+                        const err_str = try reply_alloc.print(
+                            "Peer ID {d}: failed to edit at --clear-degraded. Why: {t}",
+                            .{ ep.id, err },
+                        );
+
+                        cmd = .{ .DaemonError = err_str };
+                        break :blk cmd;
+                    };
+                }
+
+                var host_set: bool = false;
+                if (ep.params.clear_host) {
+                    // Perhaps the client CLI should warn if you provided both -i and --clear-host.
+                    self.repo.setPeerHostname(ep.id, ep.params.host) catch |err| {
+                        const err_str = try reply_alloc.print(
+                            "Peer ID {d}: failed to edit at --clear-host. Why: {t}",
+                            .{ ep.id, err },
+                        );
+
+                        cmd = .{ .DaemonError = err_str };
+                        break :blk cmd;
+                    };
+
+                    host_set = true;
+                }
+
+                if (!host_set and ep.params.host != null) {
+                    self.repo.setPeerHostname(ep.id, ep.params.host.?) catch |err| {
+                        const err_str = try reply_alloc.print(
+                            "Peer ID {d}: failed to edit at --host. Why: {t}",
+                            .{ ep.id, err },
+                        );
+
+                        cmd = .{ .DaemonError = err_str };
+                        break :blk cmd;
+                    };
+                }
+
+                if (ep.params.nick) |nick| {
+                    self.repo.setPeerNickname(ep.id, nick) catch |err| {
+                        const err_str = try reply_alloc.print(
+                            "Peer ID {d}: failed to edit at --nick. Why: {t}",
+                            .{ ep.id, err },
+                        );
+
+                        cmd = .{ .DaemonError = err_str };
+                        break :blk cmd;
+                    };
+                }
+
+                if (ep.params.pubkey) |pk| {
+                    if (pk.len != PUBKEY_LEN_B64) {
+                        cmd = .{ .DaemonError = "public key had invalid length. Should be 44 bytes." };
+                        break :blk cmd;
+                    }
+
+                    self.repo.setPeerPubkey(ep.id, pk) catch |err| {
+                        const err_str = try reply_alloc.print(
+                            "Peer ID {d}: failed to edit at --pubkey. Why: {t}",
+                            .{ ep.id, err },
+                        );
+
+                        cmd = .{ .DaemonError = err_str };
+                        break :blk cmd;
+                    };
+                }
 
                 break :blk cmd;
             },
@@ -246,7 +361,7 @@ fn handleConnectionRw(self: *UnixSocket, rdr: *Io.Reader, writer: *Io.Writer) !v
                 defer self.alloc.free(addr);
 
                 if (peer.host) |host| {
-                    addr = try std.fmt.allocPrint(self.alloc, "{f}", .{host});
+                    addr = try reply_alloc.print("{f}", .{host});
                 }
 
                 const id = self.repo.addPeer(.{
