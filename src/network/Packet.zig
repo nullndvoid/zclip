@@ -15,9 +15,9 @@
 
 const std = @import("std");
 const Io = std.Io;
+const panic = std.debug.panic;
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
-const ArenaAllocator = std.heap.ArenaAllocator;
 
 const Serde = @import("serde");
 
@@ -114,7 +114,8 @@ pub fn format(
                 checks.small_enough = std.base64.standard.Encoder.calcSize(clip.chunk.bytes.len) <= MAX_CHUNK_DATA_LEN;
 
             switch (checks) {
-                .{ .is_text = true, .small_enough = true } => Serde.json.toPrettyWriter(writer, self, .{}) catch unreachable,
+                .{ .is_text = true, .small_enough = true } => Serde.json.toPrettyWriter(writer, self, .{}) catch
+                    panic("failed to format packet to JSON", .{}),
                 .{ .is_text = true, .small_enough = false } => {
                     var chunk_buf: [PLAINTEXT_BUF_LEN]u8 = undefined;
                     var chunk_writer = std.Io.Writer.fixed(&chunk_buf);
@@ -127,7 +128,8 @@ pub fn format(
 
                     self_copy.payload.clip.chunk.bytes = chunk_writer.buffered();
 
-                    Serde.json.toPrettyWriter(writer, self_copy, .{}) catch unreachable;
+                    Serde.json.toPrettyWriter(writer, self_copy, .{}) catch
+                        panic("failed to format packet to JSON", .{});
                 },
                 .{ .is_text = false, .small_enough = false } => {
                     var chunk_buf: [B64_BUF_LEN]u8 = undefined;
@@ -141,7 +143,8 @@ pub fn format(
 
                     self_copy.payload.clip.chunk.bytes = chunk_writer.buffered();
 
-                    Serde.json.toPrettyWriter(writer, self_copy, .{}) catch unreachable;
+                    Serde.json.toPrettyWriter(writer, self_copy, .{}) catch
+                        panic("failed to format packet to JSON", .{});
                 },
                 .{ .is_text = false, .small_enough = true } => {
                     var chunk_buf: [MAX_CHUNK_DATA_LEN_B64]u8 = undefined;
@@ -152,7 +155,8 @@ pub fn format(
 
                     self_copy.payload.clip.chunk.bytes = chunk_writer.buffered();
 
-                    Serde.json.toPrettyWriter(writer, self_copy, .{}) catch unreachable;
+                    Serde.json.toPrettyWriter(writer, self_copy, .{}) catch
+                        panic("failed to format packet to JSON", .{});
                 },
             }
         },
@@ -163,7 +167,8 @@ pub fn format(
             };
 
             switch (checks) {
-                .{ .is_text = true, .small_enough = true } => Serde.json.toPrettyWriter(writer, self, .{}) catch unreachable,
+                .{ .is_text = true, .small_enough = true } => Serde.json.toPrettyWriter(writer, self, .{}) catch
+                    panic("failed to format packet to JSON", .{}),
                 .{ .is_text = true, .small_enough = false } => {
                     var chunk_buf: [MAX_CHUNK_DATA_LEN + 3]u8 = undefined;
                     var chunk_writer = std.Io.Writer.fixed(&chunk_buf);
@@ -173,7 +178,8 @@ pub fn format(
 
                     self_copy.payload.request_clip_response.chunk.bytes = chunk_writer.buffered();
 
-                    Serde.json.toPrettyWriter(writer, self_copy, .{}) catch unreachable;
+                    Serde.json.toPrettyWriter(writer, self_copy, .{}) catch
+                        panic("failed to format packet to JSON", .{});
                 },
                 .{ .is_text = false, .small_enough = false } => {
                     var chunk_buf: [MAX_CHUNK_DATA_LEN_B64 + 3]u8 = undefined;
@@ -184,7 +190,8 @@ pub fn format(
 
                     self_copy.payload.request_clip_response.chunk.bytes = chunk_writer.buffered();
 
-                    Serde.json.toPrettyWriter(writer, self_copy, .{}) catch unreachable;
+                    Serde.json.toPrettyWriter(writer, self_copy, .{}) catch
+                        panic("failed to format packet to JSON", .{});
                 },
                 .{ .is_text = false, .small_enough = true } => {
                     var chunk_buf: [MAX_CHUNK_DATA_LEN_B64]u8 = undefined;
@@ -195,11 +202,13 @@ pub fn format(
 
                     self_copy.payload.request_clip_response.chunk.bytes = chunk_writer.buffered();
 
-                    Serde.json.toPrettyWriter(writer, self_copy, .{}) catch unreachable;
+                    Serde.json.toPrettyWriter(writer, self_copy, .{}) catch
+                        panic("failed to format packet to JSON", .{});
                 },
             }
         },
-        else => Serde.json.toPrettyWriter(writer, self, .{}) catch unreachable,
+        else => Serde.json.toPrettyWriter(writer, self, .{}) catch
+            panic("failed to format packet to JSON", .{}),
     }
 }
 
