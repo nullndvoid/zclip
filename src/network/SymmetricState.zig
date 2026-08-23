@@ -20,10 +20,8 @@ const HASH_LENGTH = Sha256.digest_length;
 const DH_LENGTH = std.crypto.dh.X25519.shared_length;
 const HkdfSha256 = std.crypto.kdf.hkdf.HkdfSha256;
 const secureZero = std.crypto.secureZero;
-const Aes256Gcm = std.crypto.aead.aes_gcm.Aes256Gcm;
 
 const CipherState = @import("CipherState.zig");
-const NoiseSession = @import("NoiseSession.zig");
 
 const SymmetricState = @This();
 

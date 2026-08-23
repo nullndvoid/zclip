@@ -17,9 +17,7 @@ const Allocator = std.mem.Allocator;
 
 const zclip = @import("clipboard");
 const Clipboard = zclip.Clipboard;
-const Clip = zclip.Clip;
 
-const Config = @import("Config.zig");
 const Network = @import("Network.zig");
 const Repo = @import("Repo.zig");
 const UnixSocket = @import("UnixSocket.zig");

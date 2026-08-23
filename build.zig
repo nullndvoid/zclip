@@ -1,8 +1,6 @@
 const std = @import("std");
 
-const Scanner = @import("wayland").Scanner;
 
-const Platform = enum { wayland, windows };
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});

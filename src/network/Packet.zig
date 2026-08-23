@@ -17,7 +17,6 @@ const std = @import("std");
 const Io = std.Io;
 const assert = std.debug.assert;
 
-const clipboard = @import("clipboard");
 const Serde = @import("serde");
 
 const Header = @import("packet/Header.zig");

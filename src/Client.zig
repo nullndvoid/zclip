@@ -15,10 +15,8 @@
 
 const std = @import("std");
 const Io = std.Io;
-const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
-const serde = @import("serde");
 
 const Network = @import("Network.zig");
 const UnixSocket = @import("UnixSocket.zig");

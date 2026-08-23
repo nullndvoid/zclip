@@ -23,7 +23,6 @@ const Config = @import("Config.zig");
 const Daemon = @import("Daemon.zig");
 const Log = @import("log.zig");
 const Network = @import("Network.zig");
-const Repo = @import("Repo.zig");
 const util = @import("util.zig");
 
 const log = std.log.scoped(.zclip);

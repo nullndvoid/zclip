@@ -13,10 +13,8 @@
 
 //! Packet payload definitions.
 const std = @import("std");
-const Io = std.Io;
 
 const clipboard = @import("clipboard");
-const Serde = @import("serde");
 
 const Packet = @import("../Packet.zig");
 const Id = Packet.Id;

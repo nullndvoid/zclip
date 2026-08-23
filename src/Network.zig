@@ -18,9 +18,7 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const Arena = std.heap.ArenaAllocator;
 
-const Serde = @import("serde");
 
-const AppConfig = @import("Config.zig");
 pub const Identity = @import("network/Identity.zig");
 const NoiseSession = @import("network/NoiseSession.zig");
 const Packet = @import("network/Packet.zig");

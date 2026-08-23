@@ -21,7 +21,6 @@ const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 const testing = std.testing;
 
-const serde = @import("serde");
 
 const Network = @import("../Network.zig");
 const CipherState = @import("CipherState.zig");
@@ -29,7 +28,6 @@ const Error = CipherState.Error;
 pub const AEAD_TAG_LENGTH = CipherState.TAG_LENGTH;
 const EncryptedWriter = @import("EncryptedWriter.zig");
 const HandshakeState = @import("HandshakeState.zig");
-const Packet = @import("Packet.zig");
 
 const log = std.log.scoped(.NoiseSession);
 

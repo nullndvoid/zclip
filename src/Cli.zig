@@ -12,15 +12,10 @@
 // GNU General Public License for more details.
 
 const builtin = @import("std").builtin;
-const Type = builtin.Type;
 const std = @import("std");
 const Io = std.Io;
-const Allocator = std.mem.Allocator;
-const ArenaAllocator = std.heap.ArenaAllocator;
 
 const argv = @import("argv");
-const build_options = @import("options");
-const clip = @import("clipboard");
 
 const Network = @import("Network.zig");
 

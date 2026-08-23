@@ -17,7 +17,6 @@
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
-const Base64 = std.base64.standard;
 
 const known = @import("known-folders");
 const Serde = @import("serde");
