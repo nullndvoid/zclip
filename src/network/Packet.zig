@@ -192,7 +192,7 @@ pub fn format(
 /// be used for all packets sent and recieved.
 pub fn encode(packet: *const Packet, writer: *Io.Writer) !void {
     // Write the request id, timestamp, and tag.
-    try writer.writeInt(u8, @intFromEnum(packet.payload), .big);
+    try writer.writeInt(u8, @backingInt(packet.payload), .big);
     try writer.writeInt(Id, packet.header.request_id, .big);
     try writer.writeInt(i64, packet.header.timestamp_ms.val, .big);
 
@@ -202,7 +202,7 @@ pub fn encode(packet: *const Packet, writer: *Io.Writer) !void {
         .err => |err| {
             // We set the upper bit to determine if there was an optional message.
             const opt = @as(u8, @intCast(@intFromBool(err.extra_context != null))) << 7;
-            const tag: u8 = @intFromEnum(err.tag) | opt;
+            const tag: u8 = @backingInt(err.tag) | opt;
 
             try writer.writeInt(u8, tag, .big);
 
@@ -243,7 +243,7 @@ pub fn decode(buf: []const u8) !Packet {
     // to slice from current position and skip ahead.
     var rdr = Io.Reader.fixed(buf);
 
-    const payload_tag: PayloadTag = @enumFromInt(try rdr.takeInt(u8, .big));
+    const payload_tag: PayloadTag = @fromBackingInt(@intCast(try rdr.takeInt(u8, .big)));
     const request_id = try rdr.takeInt(Id, .big);
     const timestamp_ms = try rdr.takeInt(i64, .big);
 
@@ -356,12 +356,12 @@ fn chunkSize(chunk: Chunk) usize {
 }
 
 inline fn writeClipFormat(writer: *Io.Writer, fmt: ClipFormat) !void {
-    try writer.writeInt(u8, @intFromEnum(fmt.fmt), .big);
+    try writer.writeInt(u8, @backingInt(fmt.fmt), .big);
     try writeByteSlice(writer, fmt.mime);
 }
 
 inline fn readClipFormat(rdr: *Io.Reader) !ClipFormat {
-    const clip_type: ClipType = @enumFromInt(try rdr.takeInt(u8, .big));
+    const clip_type: ClipType = @fromBackingInt(@intCast(try rdr.takeInt(u8, .big)));
     switch (clip_type) {
         .file, .html, .image, .other, .rtf, .text => {},
         _ => return error.InvalidClipType,
@@ -411,7 +411,7 @@ inline fn readChunkAssumeLast(rdr: *Io.Reader) !Chunk {
 
 /// Returns (tag, should_read_slice).
 inline fn decodeErrTag(err_tag: u8) struct { ErrorTags, bool } {
-    const tag: ErrorTags = @enumFromInt(err_tag & 0x7f);
+    const tag: ErrorTags = @fromBackingInt(@intCast(err_tag & 0x7f));
     const should_read_slice: bool = (err_tag & 0x80) != 0;
 
     return .{ tag, should_read_slice };
@@ -509,10 +509,10 @@ test "decode err with junk data" {
     var timestamp_ms_buf: [8]u8 = undefined;
     std.mem.writeInt(i64, &timestamp_ms_buf, timestamp_ms, .big);
 
-    const payload_tag: []const u8 = &.{@intFromEnum(PayloadTag.err)};
+    const payload_tag: []const u8 = &.{@backingInt(PayloadTag.err)};
 
     // No upper bit set so we expect no data after the tag.
-    const error_tag: []const u8 = &.{@intFromEnum(ErrorTags.NoSuchId)};
+    const error_tag: []const u8 = &.{@backingInt(ErrorTags.NoSuchId)};
 
     // Finally if we append some junk data after an error tag with null
     // extra_context we should get an error.

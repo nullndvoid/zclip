@@ -33,12 +33,12 @@ public_key: [X25519.public_length]u8,
 /// On Windows we rely on the inherited ACL of the user's data directory instead.
 const KEYFILE_PERMS: Io.File.Permissions = switch (builtin.os.tag) {
     .windows => .default_file,
-    else => @enumFromInt(0o600),
+    else => @fromBackingInt(@intCast(0o600)),
 };
 
 const KEYFILE_DIR_PERMS: Io.File.Permissions = switch (builtin.os.tag) {
     .windows => .default_dir,
-    else => @enumFromInt(0o700),
+    else => @fromBackingInt(@intCast(0o700)),
 };
 
 pub fn fromPath(io: Io, path: []const u8, quiet: bool) !Identity {
