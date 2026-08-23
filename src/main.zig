@@ -119,8 +119,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     var envmap = try minimal.environ.createMap(gpa.allocator());
     defer envmap.deinit();
 
-    var config: Config = undefined;
-
+    var config: Config = .default;
     if (cli_opts.config_path) |path| {
         config = try Config.fromPath(io, arena.allocator(), path);
     } else {
@@ -329,8 +328,10 @@ fn getSocketPath(alloc: Allocator, env: std.process.Environ) ![]const u8 {
 }
 
 /// Global for signal handler usage.
+// SAFETY: This is initialised before signal handling is set up.
 var io: Io = undefined;
 /// Global for signal handler usage.
+// SAFETY: This is initialised before signal handling is set up.
 var interrupt_event: std.Io.Event = .unset;
 
 /// Sets up signal handling and waits until an interrupt is recieved.

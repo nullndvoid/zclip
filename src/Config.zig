@@ -32,6 +32,13 @@ const Config = @This();
 data: InnerConfig,
 path: []const u8,
 
+pub const default = Config{
+    .data = .{},
+    // This is getting overwritten anyway, it just looks less smelly than
+    // initialising as undefined.
+    .path = "",
+};
+
 /// Wrapped in Config because we want to manage the lifetimes of data allocated but
 /// automatically parse into a struct.
 pub const InnerConfig = struct {

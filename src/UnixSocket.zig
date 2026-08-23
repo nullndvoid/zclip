@@ -262,16 +262,13 @@ fn handleGetPeers(self: *UnixSocket, alloc: Allocator) !Command {
 
 fn handleEditPeer(self: *UnixSocket, payload: EditPeerPayload, alloc: Allocator) !Command {
     // Check the peer exists first.
-    var cmd: Command = .Ok;
-
     const exists = self.repo.peerExistsById(payload.id) catch |err| {
         const err_str = try alloc.print(
             "Peer ID {d}: failed to edit (tried checking peer exists). Why: {t}",
             .{ payload.id, err },
         );
 
-        cmd = .{ .DaemonError = err_str };
-        return cmd;
+        return .{ .DaemonError = err_str };
     };
 
     if (!exists) {
@@ -280,8 +277,7 @@ fn handleEditPeer(self: *UnixSocket, payload: EditPeerPayload, alloc: Allocator)
             .{payload.id},
         );
 
-        cmd = .{ .DaemonError = err_str };
-        return cmd;
+        return .{ .DaemonError = err_str };
     }
 
     if (payload.params.clear_degraded) {
@@ -291,8 +287,7 @@ fn handleEditPeer(self: *UnixSocket, payload: EditPeerPayload, alloc: Allocator)
                 .{ payload.id, err },
             );
 
-            cmd = .{ .DaemonError = err_str };
-            return cmd;
+            return .{ .DaemonError = err_str };
         };
     }
 
@@ -305,8 +300,7 @@ fn handleEditPeer(self: *UnixSocket, payload: EditPeerPayload, alloc: Allocator)
                 .{ payload.id, err },
             );
 
-            cmd = .{ .DaemonError = err_str };
-            return cmd;
+            return .{ .DaemonError = err_str };
         };
 
         host_set = true;
@@ -319,8 +313,7 @@ fn handleEditPeer(self: *UnixSocket, payload: EditPeerPayload, alloc: Allocator)
                 .{ payload.id, err },
             );
 
-            cmd = .{ .DaemonError = err_str };
-            return cmd;
+            return .{ .DaemonError = err_str };
         };
     }
 
@@ -331,15 +324,13 @@ fn handleEditPeer(self: *UnixSocket, payload: EditPeerPayload, alloc: Allocator)
                 .{ payload.id, err },
             );
 
-            cmd = .{ .DaemonError = err_str };
-            return cmd;
+            return .{ .DaemonError = err_str };
         };
     }
 
     if (payload.params.pubkey) |pk| {
         if (pk.len != PUBKEY_LEN_B64) {
-            cmd = .{ .DaemonError = "public key had invalid length. Should be 44 bytes." };
-            return cmd;
+            return .{ .DaemonError = "public key had invalid length. Should be 44 bytes." };
         }
 
         self.repo.setPeerPubkey(payload.id, pk) catch |err| {
@@ -348,21 +339,16 @@ fn handleEditPeer(self: *UnixSocket, payload: EditPeerPayload, alloc: Allocator)
                 .{ payload.id, err },
             );
 
-            cmd = .{ .DaemonError = err_str };
-            return cmd;
+            return .{ .DaemonError = err_str };
         };
     }
 
-    return cmd;
+    return .Ok;
 }
 
 fn handleRemovePeer(self: *UnixSocket, peer_id: u64) !Command {
-    var cmd: Command = undefined;
-
     self.repo.removePeer(peer_id) catch |err| {
-        cmd = .{ .DaemonError = @errorName(err) };
-
-        return cmd;
+        return .{ .DaemonError = @errorName(err) };
     };
 
     self.commands.putOne(
@@ -370,13 +356,10 @@ fn handleRemovePeer(self: *UnixSocket, peer_id: u64) !Command {
         .{ .peer_rm = peer_id },
     ) catch {};
 
-    cmd = .Ok;
-
-    return cmd;
+    return .Ok;
 }
 
 fn handlePostPeer(self: *UnixSocket, peer: Network.Peer, force: bool, alloc: Allocator) !Command {
-    var cmd: Command = undefined;
     var peer_copy = peer;
 
     // The DB stores pubkeys base64 encoded.
@@ -393,9 +376,7 @@ fn handlePostPeer(self: *UnixSocket, peer: Network.Peer, force: bool, alloc: All
         .nickname = peer.nickname,
         .pubkey = &pubkey_b64,
     }, force) catch |err| {
-        cmd = .{ .DaemonError = @errorName(err) };
-
-        return cmd;
+        return .{ .DaemonError = @errorName(err) };
     };
 
     // We should try to ignore errors here since we did commit to
@@ -403,15 +384,13 @@ fn handlePostPeer(self: *UnixSocket, peer: Network.Peer, force: bool, alloc: All
     // tell it to start trying to connect to a new peer.
     errdefer comptime unreachable;
 
-    cmd = .Ok;
-
     // TODO: We don't particularly care if this failed because we
     // committed to DB, but perhaps we can return a warning to
     // the user.
     peer_copy.id = id;
     self.commands.putOne(self.io, .{ .peer_add = peer_copy }) catch {};
 
-    return cmd;
+    return .Ok;
 }
 
 const MAX_CONTENT_LENGTH = 16 * 1024 * 1024;
