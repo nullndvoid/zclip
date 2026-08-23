@@ -18,7 +18,6 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const Arena = std.heap.ArenaAllocator;
 
-
 pub const Identity = @import("network/Identity.zig");
 const NoiseSession = @import("network/NoiseSession.zig");
 const Packet = @import("network/Packet.zig");
@@ -281,7 +280,7 @@ fn connectToPeer(self: *Network, peer: Peer) error{Canceled}!void {
         var encrypted_writer = session.encryptedWriter(writer);
         const encwriter = &encrypted_writer.interface;
 
-        self.processPackets(rdr, encwriter, &session, peer) catch |err| switch (err) {
+        self.processPackets(rdr, encwriter, &session, peer, conn_arena.allocator()) catch |err| switch (err) {
             error.Canceled => {},
             error.PeerRemovedLocally, error.PeerDegraded => {
                 log.info("Will not retry peer `{s}`.", .{peer.nickname});
@@ -391,10 +390,23 @@ fn handleConnectionRw(self: *Network, rdr: *Io.Reader, writer: *Io.Writer) !void
         return err;
     };
 
-    try self.processPackets(rdr, encwriter, &session, peer);
+    try self.processPackets(
+        rdr,
+        encwriter,
+        &session,
+        peer,
+        conn_arena.allocator(),
+    );
 }
 
-fn processPackets(self: *Network, rdr: *Io.Reader, writer: *Io.Writer, session: *NoiseSession, peer: Peer) anyerror!void {
+fn processPackets(
+    self: *Network,
+    rdr: *Io.Reader,
+    writer: *Io.Writer,
+    session: *NoiseSession,
+    peer: Peer,
+    alloc: Allocator,
+) anyerror!void {
     var removed: Io.Event = .unset;
 
     try self.registerConn(peer.id, &removed);
@@ -415,7 +427,7 @@ fn processPackets(self: *Network, rdr: *Io.Reader, writer: *Io.Writer, session: 
     try select.concurrent(
         .read,
         packetReadLoop,
-        .{ self, rdr, writer, session, peer },
+        .{ self, rdr, writer, session, peer, alloc },
     );
 
     switch (try select.await()) {
@@ -423,8 +435,7 @@ fn processPackets(self: *Network, rdr: *Io.Reader, writer: *Io.Writer, session: 
         .shutdown => {
             select.cancelDiscard();
 
-            const packet = Packet.init(self.io, 0, .shutting_down);
-            sendGoodbye(packet, writer) catch |err| {
+            sendGoodbye(self.io, writer) catch |err| {
                 log.debug("Could not send shutdown packet to peer #{d} ({s}): {t}", .{ peer.id, peer.nickname, err });
             };
         },
@@ -442,20 +453,32 @@ fn waitForRemoval(removed: *Io.Event, io: Io) Io.Cancelable!void {
     try removed.wait(io);
 }
 
-fn sendGoodbye(packet: Packet, writer: *Io.Writer) !void {
+fn sendGoodbye(io: Io, writer: *Io.Writer) !void {
+    const packet = Packet.init(io, 0, .shutting_down);
+
     try packet.encode(writer);
     try writer.flush();
 }
 
 /// `writer` already handles encryption, you need only pass this to
 /// `Packet.encode` and flush.
-fn packetReadLoop(self: *Network, rdr: *Io.Reader, writer: *Io.Writer, session: *NoiseSession, peer: Peer) anyerror!void {
+fn packetReadLoop(
+    self: *Network,
+    rdr: *Io.Reader,
+    writer: *Io.Writer,
+    session: *NoiseSession,
+    peer: Peer,
+    alloc: Allocator,
+) anyerror!void {
     _ = writer; // Used once payload types that warrant replies are handled.
 
     while (true) {
         const bytes = try session.recv(rdr);
 
-        const packet = try Packet.decode(bytes);
+        const packet = try Packet.decode(bytes, alloc);
+        // Failure to do this could be a memory leak since this `alloc` is
+        // backed by a long-lived arena.
+        defer packet.deinit(alloc);
 
         log.debug("Peer #{d} sent packet\n{f}", .{ peer.id, packet });
 
