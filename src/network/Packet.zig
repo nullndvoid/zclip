@@ -16,6 +16,8 @@
 const std = @import("std");
 const Io = std.Io;
 const assert = std.debug.assert;
+const Allocator = std.mem.Allocator;
+const ArenaAllocator = std.heap.ArenaAllocator;
 
 const Serde = @import("serde");
 
@@ -40,6 +42,9 @@ const HEADER_LEN = ID_LEN + @sizeOf(i64) + TAG_LEN;
 /// elements.
 const SHORT_PREFIX_LEN = @sizeOf(u8);
 
+/// The largest number of formats that can be sent in a response.
+const MAX_FORMATS = std.math.maxInt(u8);
+
 header: Header,
 payload: Payload,
 
@@ -47,7 +52,8 @@ pub const serde = .{
     .flatten = &[_][]const u8{"header"},
 };
 
-/// Creates a packet with a timestamp.
+/// Creates a packet with a timestamp. Do not call .deinit on this (this is
+/// just for decoded packets).
 pub fn init(io: Io, id: Id, payload: Payload) Packet {
     const time_now = Io.Timestamp.now(io, .real);
 
@@ -58,6 +64,19 @@ pub fn init(io: Io, id: Id, payload: Payload) Packet {
         },
         .payload = payload,
     };
+}
+
+/// Frees any allocated slices if present.
+pub fn deinit(self: Packet, alloc: Allocator) void {
+    switch (self.payload) {
+        .formats_response => |resp| {
+            @branchHint(.cold);
+            alloc.free(resp.formats);
+        },
+        else => {
+            @branchHint(.likely);
+        },
+    }
 }
 
 const MAX_CHUNK_DATA_LEN = 50;
@@ -221,7 +240,7 @@ pub fn encode(packet: *const Packet, writer: *Io.Writer) !void {
         .formats_response => |fmts| {
             try writer.writeInt(Id, fmts.id, .big);
             // This limit is essentially unreachable.
-            assert(fmts.formats.len <= std.math.maxInt(u8));
+            assert(fmts.formats.len <= MAX_FORMATS);
 
             try writer.writeInt(u8, @intCast(fmts.formats.len), .big);
             for (fmts.formats) |fmt| {
@@ -236,8 +255,22 @@ pub fn encode(packet: *const Packet, writer: *Io.Writer) !void {
     }
 }
 
-pub fn decode(buf: []const u8) !Packet {
-    var out: Packet = undefined;
+/// Attempts to decode a packet given an input `buf`.
+///
+/// `alloc` is only used for slices of non u8 child type.
+///
+/// An arena should probably back this for ease of use.
+///
+/// Any u8 slice can be read directly out of `buf` and lives
+/// as long as `buf`.
+///
+/// Thus `buf` should live as long as the packet data is needed.
+///
+/// # Important note
+///
+/// You could call `.deinit` which frees any allocated slices for you.
+pub fn decode(buf: []const u8, alloc: Allocator) !Packet {
+
     // This should track cursor position for us, so we should be able
     // to slice from current position and skip ahead.
     var rdr = Io.Reader.fixed(buf);
@@ -246,7 +279,7 @@ pub fn decode(buf: []const u8) !Packet {
     const request_id = try rdr.takeInt(Id, .big);
     const timestamp_ms = try rdr.takeInt(i64, .big);
 
-    out.header = .{
+    const header = Header{
         .request_id = request_id,
         .timestamp_ms = .{ .val = timestamp_ms },
     };
@@ -257,11 +290,14 @@ pub fn decode(buf: []const u8) !Packet {
             const mime = try readByteSlice(&rdr);
             const chunk = try readChunkAssumeLast(&rdr);
 
-            out.payload = .{
-                .clip = .{
-                    .id = id,
-                    .mime_type = mime,
-                    .chunk = chunk,
+            return .{
+                .header = header,
+                .payload = .{
+                    .clip = .{
+                        .id = id,
+                        .mime_type = mime,
+                        .chunk = chunk,
+                    },
                 },
             };
         },
@@ -273,29 +309,59 @@ pub fn decode(buf: []const u8) !Packet {
 
             if (ctx == null and rdr.bufferedLen() != 0) return error.ExtraJunk;
 
-            out.payload = .{
-                .err = .{
-                    .tag = err_tag,
-                    .extra_context = ctx,
+            return .{
+                .header = header,
+                .payload = .{
+                    .err = .{
+                        .tag = err_tag,
+                        .extra_context = ctx,
+                    },
                 },
             };
         },
-        .formats_response => {},
+        .formats_response => {
+            const id = try rdr.takeInt(Id, .big);
+            const n_formats = try rdr.takeInt(u8, .big);
+
+            const formats = try alloc.alloc(ClipFormat, n_formats);
+            errdefer alloc.free(formats);
+
+            for (formats) |*fmt| {
+                fmt.* = try readClipFormat(&rdr);
+            }
+
+            return .{
+                .header = header,
+                .payload = .{
+                    .formats_response = .{
+                        .id = id,
+                        .formats = formats,
+                    },
+                },
+            };
+        },
         .ok_response => {
             const id = try rdr.takeInt(Id, .big);
-            out.payload = .{ .ok_response = id };
+
+            return .{ .header = header, .payload = .{ .ok_response = id } };
         },
         .shutting_down => {
-            out.payload = .shutting_down;
+            return .{
+                .header = header,
+                .payload = .shutting_down,
+            };
         },
         .request_clip => {
             const id = try rdr.takeInt(Id, .big);
             const fmt = try readClipFormat(&rdr);
 
-            out.payload = .{
-                .request_clip = .{
-                    .id = id,
-                    .format = fmt,
+            return .{
+                .header = header,
+                .payload = .{
+                    .request_clip = .{
+                        .id = id,
+                        .format = fmt,
+                    },
                 },
             };
         },
@@ -304,22 +370,24 @@ pub fn decode(buf: []const u8) !Packet {
             const fmt = try readClipFormat(&rdr);
             const chunk = try readChunkAssumeLast(&rdr);
 
-            out.payload = .{
-                .request_clip_response = .{
-                    .id = id,
-                    .format = fmt,
-                    .chunk = chunk,
+            return .{
+                .header = header,
+                .payload = .{
+                    .request_clip_response = .{
+                        .id = id,
+                        .format = fmt,
+                        .chunk = chunk,
+                    },
                 },
             };
         },
         .request_formats => {
             const id = try rdr.takeInt(Id, .big);
-            out.payload = .{ .request_formats = id };
+
+            return .{ .header = header, .payload = .{ .request_formats = id } };
         },
         _ => return error.InvalidPayload,
     }
-
-    return out;
 }
 
 /// Returns the on wire (serialised) size of a packet.
@@ -466,7 +534,8 @@ fn encodeDecodeParity(packet: *const Packet, alloc: std.mem.Allocator) !void {
     const bytes = try allocating.toOwnedSlice();
     defer alloc.free(bytes);
 
-    const decoded = try decode(bytes);
+    const decoded = try decode(bytes, alloc);
+    defer decoded.deinit(alloc);
 
     try t.expectEqualDeep(packet, &decoded);
 }
@@ -499,6 +568,7 @@ test "encode and decode blank packet" {
 
 test "decode err with junk data" {
     const t = std.testing;
+    const alloc = t.allocator;
 
     const id: Id = 3817;
     var id_buf: [8]u8 = undefined;
@@ -518,7 +588,7 @@ test "decode err with junk data" {
     const packet_bytes: []const u8 = payload_tag ++ &id_buf ++
         &timestamp_ms_buf ++ error_tag ++ &[_]u8{ 0x67, 0x41 };
 
-    try t.expectError(error.ExtraJunk, decode(packet_bytes));
+    try t.expectError(error.ExtraJunk, decode(packet_bytes, alloc));
 }
 
 test "reject unknown payload type" {
@@ -539,5 +609,57 @@ test "reject unknown payload type" {
     // First byte is for the payload.
     bytes[0] = 0xAA;
 
-    try t.expectError(error.InvalidPayload, decode(bytes));
+    try t.expectError(error.InvalidPayload, decode(bytes, alloc));
+}
+
+test "encode and decode clipformats response" {
+    const t = std.testing;
+    const alloc = t.allocator;
+
+    var fmts = [_]ClipFormat{
+        .{
+            .fmt = .text,
+            .mime = "text/plain;charset=utf-8",
+        },
+        .{
+            .fmt = .html,
+            .mime = "text/html",
+        },
+    };
+
+    const packet = init(
+        t.io,
+        1234,
+        .{
+            .formats_response = .{
+                .id = 1271,
+                .formats = &fmts,
+            },
+        },
+    );
+
+    var allocating = Io.Writer.Allocating.init(alloc);
+    const writer = &allocating.writer;
+    errdefer allocating.deinit();
+
+    try packet.encode(writer);
+
+    const bytes = try allocating.toOwnedSlice();
+    defer alloc.free(bytes);
+
+    const got = try Packet.decode(bytes, alloc);
+    defer got.deinit(alloc);
+
+    try t.expectEqualDeep(
+        got.header,
+        packet.header,
+    );
+
+    const packet_resp = packet.payload.formats_response;
+    const got_resp = got.payload.formats_response;
+
+    for (packet_resp.formats, got_resp.formats) |pkt, g| {
+        try t.expectEqualStrings(pkt.mime, g.mime);
+        try t.expectEqual(pkt.fmt, g.fmt);
+    }
 }
