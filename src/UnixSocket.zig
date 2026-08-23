@@ -218,11 +218,12 @@ const PUBKEY_LEN_B64 = 44;
 fn handleConnectionRw(self: *UnixSocket, rdr: *Io.Reader, writer: *Io.Writer) !void {
     var arena = ArenaAllocator.init(self.alloc);
     defer arena.deinit();
+    const reply_alloc = arena.allocator();
 
     while (true) {
         _ = arena.reset(.retain_capacity);
 
-        const command = readFramedCommand(rdr, arena.allocator(), .{}) catch |err| switch (err) {
+        const command = readFramedCommand(rdr, reply_alloc, .{}) catch |err| switch (err) {
             // Client disconnected cleanly between commands.
             error.EndOfStream => return,
             error.TruncatedCommand => {
@@ -235,183 +236,182 @@ fn handleConnectionRw(self: *UnixSocket, rdr: *Io.Reader, writer: *Io.Writer) !v
             },
         };
 
-        const reply_alloc = arena.allocator();
         const reply: Command = switch (command) {
-            .GetPubkey => .{
-                .Pubkey = .{
-                    .pubkey = self.identity.public_key,
-                },
-            },
-            .GetPeers => blk: {
-                var cmd: Command = undefined;
-                const peers = self.repo.getPeers(arena.allocator()) catch |err| {
-                    cmd = .{ .DaemonError = @errorName(err) };
-                    break :blk cmd;
-                };
-                cmd = .{ .Peers = peers };
-
-                break :blk cmd;
-            },
-            .EditPeer => |ep| blk: {
-                // Check the peer exists first.
-                var cmd: Command = .Ok;
-
-                const exists = self.repo.peerExistsById(ep.id) catch |err| {
-                    const err_str = try reply_alloc.print(
-                        "Peer ID {d}: failed to edit (tried checking peer exists). Why: {t}",
-                        .{ ep.id, err },
-                    );
-
-                    cmd = .{ .DaemonError = err_str };
-                    break :blk cmd;
-                };
-
-                if (!exists) {
-                    const err_str = try reply_alloc.print(
-                        "Peer ID {d} does not exist!",
-                        .{ep.id},
-                    );
-
-                    cmd = .{ .DaemonError = err_str };
-                    break :blk cmd;
-                }
-
-                if (ep.params.clear_degraded) {
-                    self.repo.updatePeerDegraded(ep.id, null) catch |err| {
-                        const err_str = try reply_alloc.print(
-                            "Peer ID {d}: failed to edit at --clear-degraded. Why: {t}",
-                            .{ ep.id, err },
-                        );
-
-                        cmd = .{ .DaemonError = err_str };
-                        break :blk cmd;
-                    };
-                }
-
-                var host_set: bool = false;
-                if (ep.params.clear_host) {
-                    // Perhaps the client CLI should warn if you provided both -i and --clear-host.
-                    self.repo.setPeerHostname(ep.id, ep.params.host) catch |err| {
-                        const err_str = try reply_alloc.print(
-                            "Peer ID {d}: failed to edit at --clear-host. Why: {t}",
-                            .{ ep.id, err },
-                        );
-
-                        cmd = .{ .DaemonError = err_str };
-                        break :blk cmd;
-                    };
-
-                    host_set = true;
-                }
-
-                if (!host_set and ep.params.host != null) {
-                    self.repo.setPeerHostname(ep.id, ep.params.host.?) catch |err| {
-                        const err_str = try reply_alloc.print(
-                            "Peer ID {d}: failed to edit at --host. Why: {t}",
-                            .{ ep.id, err },
-                        );
-
-                        cmd = .{ .DaemonError = err_str };
-                        break :blk cmd;
-                    };
-                }
-
-                if (ep.params.nick) |nick| {
-                    self.repo.setPeerNickname(ep.id, nick) catch |err| {
-                        const err_str = try reply_alloc.print(
-                            "Peer ID {d}: failed to edit at --nick. Why: {t}",
-                            .{ ep.id, err },
-                        );
-
-                        cmd = .{ .DaemonError = err_str };
-                        break :blk cmd;
-                    };
-                }
-
-                if (ep.params.pubkey) |pk| {
-                    if (pk.len != PUBKEY_LEN_B64) {
-                        cmd = .{ .DaemonError = "public key had invalid length. Should be 44 bytes." };
-                        break :blk cmd;
-                    }
-
-                    self.repo.setPeerPubkey(ep.id, pk) catch |err| {
-                        const err_str = try reply_alloc.print(
-                            "Peer ID {d}: failed to edit at --pubkey. Why: {t}",
-                            .{ ep.id, err },
-                        );
-
-                        cmd = .{ .DaemonError = err_str };
-                        break :blk cmd;
-                    };
-                }
-
-                break :blk cmd;
-            },
-            .PostPeer => |p| blk: {
-                var peer = p.peer;
-                const force = p.force;
-
-                var cmd: Command = undefined;
-
-                // The DB stores pubkeys base64 encoded.
-                const pubkey_b64 = util.encodeKey(peer.pubkey);
-
-                var addr: []u8 = &.{};
-                // This is sound because 0 length free is a no-op.
-                defer self.alloc.free(addr);
-
-                if (peer.host) |host| {
-                    addr = try reply_alloc.print("{f}", .{host});
-                }
-
-                const id = self.repo.addPeer(.{
-                    .addr = if (peer.host) |_| addr else null,
-                    .nickname = peer.nickname,
-                    .pubkey = &pubkey_b64,
-                }, force) catch |err| {
-                    cmd = .{ .DaemonError = @errorName(err) };
-
-                    break :blk cmd;
-                };
-
-                // We should try to ignore errors here since we did commit to
-                // DB, but I want to push an event to the Network handler to
-                // tell it to start trying to connect to a new peer.
-                errdefer comptime unreachable;
-
-                cmd = .Ok;
-
-                // TODO: We don't particularly care if this failed because we
-                // committed to DB, but perhaps we can return a warning to
-                // the user.
-                peer.id = id;
-                self.commands.putOne(self.io, .{ .peer_add = peer }) catch {};
-
-                break :blk cmd;
-            },
-            .RemovePeer => |p| blk: {
-                var cmd: Command = undefined;
-
-                self.repo.removePeer(p.id) catch |err| {
-                    cmd = .{ .DaemonError = @errorName(err) };
-
-                    break :blk cmd;
-                };
-
-                self.commands.putOne(
-                    self.io,
-                    .{ .peer_rm = p.id },
-                ) catch {};
-
-                cmd = .Ok;
-
-                break :blk cmd;
-            },
+            .GetPubkey => .{ .Pubkey = .{ .pubkey = self.identity.public_key } },
+            .GetPeers => try self.handleGetPeers(reply_alloc),
+            .EditPeer => |ep| try self.handleEditPeer(ep, reply_alloc),
+            .PostPeer => |p| try self.handlePostPeer(p.peer, p.force, reply_alloc),
+            .RemovePeer => |p| try self.handleRemovePeer(p.id),
             else => .Ok,
         };
 
-        try writeCommandFramed(writer, arena.allocator(), reply);
+        try writeCommandFramed(writer, reply_alloc, reply);
     }
+}
+
+fn handleGetPeers(self: *UnixSocket, alloc: Allocator) !Command {
+    var cmd: Command = undefined;
+    const peers = self.repo.getPeers(alloc) catch |err| {
+        cmd = .{ .DaemonError = @errorName(err) };
+        return cmd;
+    };
+
+    cmd = .{ .Peers = peers };
+    return cmd;
+}
+
+fn handleEditPeer(self: *UnixSocket, payload: EditPeerPayload, alloc: Allocator) !Command {
+    // Check the peer exists first.
+    var cmd: Command = .Ok;
+
+    const exists = self.repo.peerExistsById(payload.id) catch |err| {
+        const err_str = try alloc.print(
+            "Peer ID {d}: failed to edit (tried checking peer exists). Why: {t}",
+            .{ payload.id, err },
+        );
+
+        cmd = .{ .DaemonError = err_str };
+        return cmd;
+    };
+
+    if (!exists) {
+        const err_str = try alloc.print(
+            "Peer ID {d} does not exist!",
+            .{payload.id},
+        );
+
+        cmd = .{ .DaemonError = err_str };
+        return cmd;
+    }
+
+    if (payload.params.clear_degraded) {
+        self.repo.updatePeerDegraded(payload.id, null) catch |err| {
+            const err_str = try alloc.print(
+                "Peer ID {d}: failed to edit at --clear-degraded. Why: {t}",
+                .{ payload.id, err },
+            );
+
+            cmd = .{ .DaemonError = err_str };
+            return cmd;
+        };
+    }
+
+    var host_set: bool = false;
+    if (payload.params.clear_host) {
+        // Perhaps the client CLI should warn if you provided both -i and --clear-host.
+        self.repo.setPeerHostname(payload.id, payload.params.host) catch |err| {
+            const err_str = try alloc.print(
+                "Peer ID {d}: failed to edit at --clear-host. Why: {t}",
+                .{ payload.id, err },
+            );
+
+            cmd = .{ .DaemonError = err_str };
+            return cmd;
+        };
+
+        host_set = true;
+    }
+
+    if (!host_set and payload.params.host != null) {
+        self.repo.setPeerHostname(payload.id, payload.params.host.?) catch |err| {
+            const err_str = try alloc.print(
+                "Peer ID {d}: failed to edit at --host. Why: {t}",
+                .{ payload.id, err },
+            );
+
+            cmd = .{ .DaemonError = err_str };
+            return cmd;
+        };
+    }
+
+    if (payload.params.nick) |nick| {
+        self.repo.setPeerNickname(payload.id, nick) catch |err| {
+            const err_str = try alloc.print(
+                "Peer ID {d}: failed to edit at --nick. Why: {t}",
+                .{ payload.id, err },
+            );
+
+            cmd = .{ .DaemonError = err_str };
+            return cmd;
+        };
+    }
+
+    if (payload.params.pubkey) |pk| {
+        if (pk.len != PUBKEY_LEN_B64) {
+            cmd = .{ .DaemonError = "public key had invalid length. Should be 44 bytes." };
+            return cmd;
+        }
+
+        self.repo.setPeerPubkey(payload.id, pk) catch |err| {
+            const err_str = try alloc.print(
+                "Peer ID {d}: failed to edit at --pubkey. Why: {t}",
+                .{ payload.id, err },
+            );
+
+            cmd = .{ .DaemonError = err_str };
+            return cmd;
+        };
+    }
+
+    return cmd;
+}
+
+fn handleRemovePeer(self: *UnixSocket, peer_id: u64) !Command {
+    var cmd: Command = undefined;
+
+    self.repo.removePeer(peer_id) catch |err| {
+        cmd = .{ .DaemonError = @errorName(err) };
+
+        return cmd;
+    };
+
+    self.commands.putOne(
+        self.io,
+        .{ .peer_rm = peer_id },
+    ) catch {};
+
+    cmd = .Ok;
+
+    return cmd;
+}
+
+fn handlePostPeer(self: *UnixSocket, peer: Network.Peer, force: bool, alloc: Allocator) !Command {
+    var cmd: Command = undefined;
+    var peer_copy = peer;
+
+    // The DB stores pubkeys base64 encoded.
+    const pubkey_b64 = util.encodeKey(peer.pubkey);
+
+    var addr: []u8 = &.{};
+
+    if (peer.host) |host| {
+        addr = try alloc.print("{f}", .{host});
+    }
+
+    const id = self.repo.addPeer(.{
+        .addr = if (peer.host) |_| addr else null,
+        .nickname = peer.nickname,
+        .pubkey = &pubkey_b64,
+    }, force) catch |err| {
+        cmd = .{ .DaemonError = @errorName(err) };
+
+        return cmd;
+    };
+
+    // We should try to ignore errors here since we did commit to
+    // DB, but I want to push an event to the Network handler to
+    // tell it to start trying to connect to a new peer.
+    errdefer comptime unreachable;
+
+    cmd = .Ok;
+
+    // TODO: We don't particularly care if this failed because we
+    // committed to DB, but perhaps we can return a warning to
+    // the user.
+    peer_copy.id = id;
+    self.commands.putOne(self.io, .{ .peer_add = peer_copy }) catch {};
+
+    return cmd;
 }
 
 const MAX_CONTENT_LENGTH = 16 * 1024 * 1024;
