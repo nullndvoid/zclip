@@ -6,9 +6,6 @@ pub fn build(b: *std.Build) !void {
 
     const exe_options = b.addOptions();
 
-    // TODO: Setup CI and have it pass this.
-    exe_options.addOption(?[]const u8, "git_rev", null);
-
     const parseargv = b.dependency("parseargv", .{
         .target = target,
         .optimize = optimize,
