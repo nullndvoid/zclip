@@ -314,15 +314,29 @@ fn printPeers(peers: []const Network.Peer, writer: *Io.Writer) !void {
         try writer.flush();
     }
 
+    var degraded_hint = false;
+
     for (peers) |p| {
         const pubkey = util.encodeKey(p.pubkey);
 
         if (p.host) |addr| {
-            try writer.print("ID {d}: {s} ({s}) {f}\n", .{ p.id, p.nickname, &pubkey, addr });
-        } else try writer.print("ID {d}: {s} ({s})\n", .{ p.id, p.nickname, &pubkey });
+            try writer.print("ID {d}: {s} ({s}) {f}", .{ p.id, p.nickname, &pubkey, addr });
+        } else try writer.print("ID {d}: {s} ({s})", .{ p.id, p.nickname, &pubkey });
+
+        if (p.degradation) |d| {
+            try writer.print(" \x1b[31m(degraded: {t})\x1b[0m", .{d});
+
+            degraded_hint = true;
+        }
+        try writer.writeAll("\n");
     }
 
-    try writer.writeAll("\n");
+    if (degraded_hint) {
+        try writer.print("\nOne or more of your peers is marked degraded, so the local daemon won't connect.\n" ++
+            "This is usually due to some configuration issue.\n" ++
+            "Fix this with `zclip peer edit` --id ID --clear-degraded`, alongside any edits you need to make.\n", .{});
+    }
+
     try writer.flush();
 }
 
