@@ -618,6 +618,7 @@ test "check only non-degraded are returned" {
         const input = added_map.get(&encoded).?;
 
         if (input.addr) |a| {
+            // Since if you do not pass a port, we default to Network.DEFAULT_NET_PORT.
             try t.expectEqualStrings(a, host[0..a.len]);
         }
         try t.expectEqualStrings(input.pubkey, &encoded);
@@ -665,4 +666,44 @@ test "toDegradationReason - valid inputs" {
 
         try t.expectEqual(out, toDegradationReason(in, 123).?);
     }
+}
+
+test "update peer nickname, pubkey" {
+    const t = std.testing;
+    const alloc = t.allocator;
+
+    var repo = try Repo.initInMemory();
+    defer repo.deinit();
+
+    const addr = "nullndvoid.xyz:41152";
+    const pubkey_b64 = "ymWobyGapm1SWFKjHIyXqKYSjk8ksuk8LzgrlVl2pVY=";
+    const nickname = "nullndvoid.xyz";
+
+    const id = try repo.addPeer(.{
+        .addr = addr,
+        .nickname = nickname,
+        .pubkey = pubkey_b64,
+    }, false);
+
+    // We already tested that the returned fields in the "add peer" test.
+    // Check the newens.
+    const new_nickname = "new nickname for fun";
+    const new_pubkey = "kg0jnlDN86eOGla4QvNmYM4CTaEisWDJ5LGeM991uqg=";
+    const new_hostname = "clips.example.com:41567";
+
+    try repo.setPeerNickname(id, new_nickname);
+    try repo.setPeerHostname(id, new_hostname);
+    try repo.setPeerPubkey(id, new_pubkey);
+
+    const got = try repo.getPeerById(id, alloc);
+    defer alloc.free(got.nickname);
+
+    const hostname = try alloc.print("{f}", .{got.host.?});
+    defer alloc.free(hostname);
+
+    const encoded = util.encodeKey(got.pubkey);
+
+    try t.expectEqualStrings(new_hostname, hostname);
+    try t.expectEqualStrings(new_pubkey, &encoded);
+    try t.expectEqualStrings(new_nickname, got.nickname);
 }
