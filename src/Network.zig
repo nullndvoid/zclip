@@ -368,11 +368,13 @@ fn handleConnectionRw(self: *Network, rdr: *Io.Reader, writer: *Io.Writer) !void
     var encrypted_writer = session.encryptedWriter(writer);
     const encwriter = &encrypted_writer.interface;
 
+    const encoded = util.encodeKey(session.peer_pubkey);
+
     // Check the peer is in DB.
-    const peer = self.repo.getPeerByPubkey(&session.peer_pubkey, conn_arena.allocator()) catch |err| {
+    const peer = self.repo.getPeerByPubkey(&encoded, conn_arena.allocator()) catch |err| {
         switch (err) {
             error.NotFound => {
-                log.warn("Peer with pubkey {b64} was not found! Unknown connection.", .{&session.peer_pubkey});
+                log.warn("Peer with pubkey {s} was not found! Unknown connection.", .{&encoded});
 
                 const packet = Packet.init(
                     self.io,
@@ -384,7 +386,7 @@ fn handleConnectionRw(self: *Network, rdr: *Io.Reader, writer: *Io.Writer) !void
                 try encwriter.flush();
             },
             else => {
-                log.err("Something went wrong looking for peer with pubkey {b64} in DB! What: {t}.", .{ &session.peer_pubkey, err });
+                log.err("Something went wrong looking for peer with pubkey {s} in DB! What: {t}.", .{ &encoded, err });
             },
         }
 
@@ -738,10 +740,7 @@ pub const Peer = struct {
         self: @This(),
         writer: *std.Io.Writer,
     ) std.Io.Writer.Error!void {
-        try writer.print("{d} ", .{self.id});
         try writer.print("{s}", .{self.nickname});
-        if (self.host) |host| try writer.print(" {f}", .{host});
-        if (self.degradation) |d| try writer.print(" (degraded: {t})", .{d});
     }
 
     /// Why the Peer is not currently connectable and we are refusing to keep

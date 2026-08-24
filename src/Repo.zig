@@ -308,6 +308,7 @@ pub fn getPeerById(repo: *Repo, id: u64, alloc: Allocator) !Network.Peer {
     return net_peer;
 }
 
+/// The pubkey should be base64 encoded!
 pub fn getPeerByPubkey(repo: *Repo, pubkey: []const u8, alloc: Allocator) !Network.Peer {
     const select = try repo.db.prepare(
         struct { pubkey: sqlite.Text },
