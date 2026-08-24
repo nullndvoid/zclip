@@ -1,3 +1,4 @@
+// zlint-disable unsafe-undefined
 const std = @import("std");
 
 pub fn build(b: *std.Build) !void {
@@ -79,12 +80,16 @@ pub fn build(b: *std.Build) !void {
 fn getVersionString(b: *std.Build) ![:0]const u8 {
     const arena = b.graph.arena;
 
-    const zon_version = std.SemanticVersion.parse(@import("build.zig.zon").version) catch unreachable;
+    const zon_version = std.SemanticVersion.parse(@import("build.zig.zon").version) catch
+        std.debug.panic(
+            "Could not parse semver from build.zig.zon. Got: {s}",
+            .{@import("build.zig.zon").version},
+        );
 
     const opt_version_string = b.option([]const u8, "version-string", "Override Zig version string. Default is to find out with git.");
     const version_slice = if (opt_version_string) |version| version else v: {
         if (!std.process.can_spawn) {
-            std.debug.print("error: version info cannot be retrieved from git. Zig version must be provided using -Dversion-string\n", .{});
+            std.log.err("version info cannot be retrieved from git. Zig version must be provided using -Dversion-string\n", .{});
             std.process.exit(1);
         }
 
@@ -134,7 +139,7 @@ fn getVersionString(b: *std.Build) ![:0]const u8 {
             0 => {
                 // Tagged release version (e.g. 0.10.0).
                 if (!std.mem.eql(u8, git_describe, version_string)) {
-                    std.debug.print("Zig version '{s}' does not match Git tag '{s}'\n", .{ version_string, git_describe });
+                    std.log.err("Zig version '{s}' does not match Git tag '{s}'\n", .{ version_string, git_describe });
                     std.process.exit(1);
                 }
                 break :v version_string;
@@ -148,13 +153,13 @@ fn getVersionString(b: *std.Build) ![:0]const u8 {
 
                 const ancestor_ver = try std.SemanticVersion.parse(tagged_ancestor);
                 if (zon_version.order(ancestor_ver) != .gt) {
-                    std.debug.print("Zig version '{f}' must be greater than tagged ancestor '{f}'\n", .{ zon_version, ancestor_ver });
+                    std.log.err("Zig version '{f}' must be greater than tagged ancestor '{f}'\n", .{ zon_version, ancestor_ver });
                     std.process.exit(1);
                 }
 
                 // Check that the commit hash is prefixed with a 'g' (a Git convention).
                 if (commit_id.len < 1 or commit_id[0] != 'g') {
-                    std.debug.print("Unexpected `git describe` output: {s}\n", .{git_describe});
+                    std.log.err("Unexpected `git describe` output: {s}\n", .{git_describe});
                     break :v version_string;
                 }
 
@@ -162,7 +167,7 @@ fn getVersionString(b: *std.Build) ![:0]const u8 {
                 break :v b.fmt("{s}-dev.{s}+{s}", .{ version_string, commit_height, commit_id[1..] });
             },
             else => {
-                std.debug.print("Unexpected `git describe` output: {s}\n", .{git_describe});
+                std.log.err("Unexpected `git describe` output: {s}\n", .{git_describe});
                 break :v version_string;
             },
         }
