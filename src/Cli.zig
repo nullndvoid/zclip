@@ -108,12 +108,14 @@ const Subcommand = union(enum) {
     ident: void,
     // TODO: Not implemented yet.
     status: void,
+    version: void,
 
     pub const help = .{
         .daemon = .{ .desc = "Run the zclip daemon" },
         .peer = .{ .desc = "Manage trusted peers" },
         .ident = .{ .desc = "Gets public key to share with peers" },
         .status = .{ .desc = "Show information about the running daemon" },
+        .version = .{ .desc = "Returns the current version of zclip" },
     };
 };
 

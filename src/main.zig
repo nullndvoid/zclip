@@ -16,6 +16,7 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
 const argv = @import("argv");
+const opts = @import("options");
 
 const Cli = @import("Cli.zig");
 const Client = @import("Client.zig");
@@ -207,6 +208,12 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     }
 
     switch (command) {
+        .version => {
+            const version = opts.version;
+
+            try stdout_writer.print("{s}\n", .{version});
+            try stdout_writer.flush();
+        },
         .daemon => unreachable,
         .ident => {
             var client_arena = std.heap.ArenaAllocator.init(gpa.allocator());
