@@ -21,6 +21,7 @@ const Arena = std.heap.ArenaAllocator;
 pub const Identity = @import("network/Identity.zig");
 const NoiseSession = @import("network/NoiseSession.zig");
 const Packet = @import("network/Packet.zig");
+const PeerRecheckPayload = @import("UnixSocket.zig").EditPeerPayload;
 const Repo = @import("Repo.zig");
 const util = @import("util.zig");
 
@@ -583,13 +584,55 @@ fn processCommands(self: *Network) Io.Cancelable!void {
         };
 
         switch (cmd) {
-            .peer_add => |peer| try self.handlePeerAdd(peer),
-            .peer_rm => |id| try self.handlePeerRm(id),
+            .peer_add => |peer| self.handlePeerAdd(peer),
+            .peer_rm => |id| self.handlePeerRm(id),
+            .peer_recheck => |payload| self.handlePeerRecheck(payload),
         }
     }
 }
 
-fn handlePeerRm(self: *Network, id: u64) !void {
+/// Takes the 'diff' of an edited peer.
+///
+/// If anything of note was changed, the connection should be dropped and
+/// re-established.
+fn handlePeerRecheck(self: *Network, payload: PeerRecheckPayload) void {
+    const peer = self.repo.getPeerById(payload.id, self.alloc) catch |e| {
+        log.err("Could not handle recheck for peer with ID {d}. Failed to fetch peer from DB. Why: {t}", .{ payload.id, e });
+        log.info("Hint: Restarting the daemon could fix this issue.", .{});
+
+        return;
+    };
+    defer self.alloc.free(peer.nickname);
+
+    log.info("Peer recheck triggered for {s}.", .{peer.nickname});
+
+    // Attempt to connect now if no longer marked degraded.
+    if (payload.params.clear_degraded and peer.host != null) {
+        self.connectToPeerIfApplicable(peer);
+    }
+
+    // Drop current connection and reconnect using new public key.
+    if (payload.params.pubkey) |_| {
+        self.active_conns_lock.lock(self.io) catch {
+            log.warn("Could not drop current connection for peer {s}. You should restart the daemon.", .{peer.nickname});
+        };
+        const removed = self.active_conns.fetchRemove(payload.id);
+        self.active_conns_lock.unlock(self.io);
+
+        if (removed) |kv| {
+            kv.value.set(self.io);
+
+            log.info("Dropping old connection for peer {s}", .{peer.nickname});
+        }
+
+        // Now just attempt to reconnect.
+        self.connectToPeerIfApplicable(peer);
+    }
+
+    log.info("Recheck: nothing to be done for peer {s}.", .{peer.nickname});
+}
+
+fn handlePeerRm(self: *Network, id: u64) void {
     self.active_conns_lock.lock(self.io) catch return;
     const removed = self.active_conns.fetchRemove(id);
 
@@ -604,10 +647,13 @@ fn handlePeerRm(self: *Network, id: u64) !void {
     }
 }
 
-fn handlePeerAdd(self: *Network, peer: Peer) !void {
-    log.debug("New peer added: {f}", .{peer});
+fn connectToPeerIfApplicable(self: *Network, peer: Peer) void {
+    // TODO: Enforce this throughout e.g. on edit/add etc.
+    std.debug.assert(std.mem.order(u8, &self.identity.public_key, &peer.pubkey) != .eq);
 
     if (std.mem.order(u8, &self.identity.public_key, &peer.pubkey) != .gt) return;
+
+    log.info("Connecting to peer {s}", .{peer.nickname});
 
     if (peer.host) |_| {
         self.tasks.concurrent(
@@ -615,12 +661,21 @@ fn handlePeerAdd(self: *Network, peer: Peer) !void {
             connectToPeer,
             .{ self, peer },
         ) catch {
-            log.err("Could not connect to ({f}) who was added. Consider restarting the daemon.", .{peer});
+            log.err(
+                "Could not connect to ({s} (id {d})). Consider restarting the daemon.",
+                .{ peer.nickname, peer.id },
+            );
             return;
         };
     } else {
         log.warn("This is a bug! You are missing a host, but the other peer will not connect!\n\nPeer: {f}", .{peer});
     }
+}
+
+fn handlePeerAdd(self: *Network, peer: Peer) void {
+    log.debug("New peer added: {f}", .{peer});
+
+    self.connectToPeerIfApplicable(peer);
 }
 
 fn acceptConnections(self: *Network) void {
@@ -648,6 +703,9 @@ pub const Command = union(enum) {
     peer_add: Peer,
     /// `Peer` was removed from the DB. This contains it's local ID.
     peer_rm: u64,
+    /// `Peer`'s details were edited. If there is a live connection it may need
+    /// re-establishing.
+    peer_recheck: PeerRecheckPayload,
 };
 
 /// Used internally.

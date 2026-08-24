@@ -340,6 +340,27 @@ fn handleEditPeer(self: *UnixSocket, payload: EditPeerPayload, alloc: Allocator)
         };
     }
 
+    // We should try to ignore errors here since we did commit to
+    // DB, but I want to push an event to the Network handler to
+    // tell it to check if anything of note changed in the DB.
+    errdefer comptime unreachable;
+
+    self.commands.putOne(self.io, .{
+        .peer_recheck = payload,
+    }) catch |e| {
+        log.warn(
+            \\Edited peer with ID {d} but could not post recheck command to Network. 
+            \\Any recheck and necesssary (re)connection will not be established until
+            \\you restart the daemon. Reason: {t}
+        , .{ payload.id, e });
+
+        // TODO: Should probably forward all relevant errors/warnings to the
+        // client since most people aren't constantly checking daemon logs.
+        //
+        // Alternatively, if we write a GUI, make it very easy to see the
+        // daemon logs.
+    };
+
     return .Ok;
 }
 
