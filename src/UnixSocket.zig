@@ -250,14 +250,11 @@ fn handleConnectionRw(self: *UnixSocket, rdr: *Io.Reader, writer: *Io.Writer) !v
 }
 
 fn handleGetPeers(self: *UnixSocket, alloc: Allocator) !Command {
-    var cmd: Command = undefined;
     const peers = self.repo.getPeers(alloc) catch |err| {
-        cmd = .{ .DaemonError = @errorName(err) };
-        return cmd;
+        return .{ .DaemonError = @errorName(err) };
     };
 
-    cmd = .{ .Peers = peers };
-    return cmd;
+    return .{ .Peers = peers };
 }
 
 fn handleEditPeer(self: *UnixSocket, payload: EditPeerPayload, alloc: Allocator) !Command {
@@ -354,7 +351,12 @@ fn handleRemovePeer(self: *UnixSocket, peer_id: u64) !Command {
     self.commands.putOne(
         self.io,
         .{ .peer_rm = peer_id },
-    ) catch {};
+    ) catch |e| {
+        log.warn(
+            \\Removed peer with ID {d} but could not post command to Network. 
+            \\Connection will not be terminated until you restart the daemon. Reason: {t}
+        , .{ peer_id, e });
+    };
 
     return .Ok;
 }
@@ -384,11 +386,16 @@ fn handlePostPeer(self: *UnixSocket, peer: Network.Peer, force: bool, alloc: All
     // tell it to start trying to connect to a new peer.
     errdefer comptime unreachable;
 
-    // TODO: We don't particularly care if this failed because we
-    // committed to DB, but perhaps we can return a warning to
-    // the user.
     peer_copy.id = id;
-    self.commands.putOne(self.io, .{ .peer_add = peer_copy }) catch {};
+    self.commands.putOne(self.io, .{ .peer_add = peer_copy }) catch |e| {
+        // TODO: Make this retryable with some kinda command?
+        //       The real underlying issue is that we want a way for both sides to
+        //       attempt to establish a connection at any time.
+        log.warn(
+            \\Added peer with ID {d} but could not post command to Network. 
+            \\Connection will not be established until you restart the daemon. Reason: {t}
+        , .{ id, e });
+    };
 
     return .Ok;
 }

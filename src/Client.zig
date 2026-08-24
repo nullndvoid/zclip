@@ -17,7 +17,6 @@ const std = @import("std");
 const Io = std.Io;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
-
 const Network = @import("Network.zig");
 const UnixSocket = @import("UnixSocket.zig");
 const Command = UnixSocket.Command;
@@ -67,7 +66,14 @@ pub fn init(io: Io, arena: *ArenaAllocator, opts: Opts) !Client {
 }
 
 pub fn deinit(self: *Client) void {
-    self.stream.shutdown(self.io, .both) catch {};
+    self.stream.shutdown(self.io, .both) catch |e| {
+        log.warn(
+            \\Failed to shutdown connection to UNIX socket.
+            \\Reason: {t}. This can likely be ignored.
+        ,
+            .{e},
+        );
+    };
     self.arena.deinit();
 }
 

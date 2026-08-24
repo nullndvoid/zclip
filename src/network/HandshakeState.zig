@@ -264,6 +264,7 @@ pub fn readMessage(
                 const temp = message[pos..][0..field_len];
                 pos += field_len;
 
+                // SAFETY: This is initialised in decryptAndHash.
                 var rs: Key = undefined;
                 const n = try self.symmetric_state.decryptAndHash(temp, &rs);
                 assert(n == DH_LENGTH);

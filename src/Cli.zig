@@ -11,7 +11,6 @@
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 // GNU General Public License for more details.
 
-const builtin = @import("std").builtin;
 const std = @import("std");
 const Io = std.Io;
 

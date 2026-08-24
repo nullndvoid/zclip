@@ -12,7 +12,6 @@
 // GNU General Public License for more details.
 
 //! Packet payload definitions.
-const std = @import("std");
 
 const clipboard = @import("clipboard");
 

@@ -34,7 +34,8 @@ pub const UnixTimestampMs = struct {
     pub fn zerdeSerialize(self: UnixTimestampMs, serializer: anytype) !void {
         var buf: [DateTime.MAX_RFC3339_LENGTH]u8 = undefined;
         const timestamp = DateTime.fromMillis(self.val);
-        const s = std.fmt.bufPrint(&buf, "{f}", .{timestamp}) catch unreachable;
+        const s = std.mem.print(&buf, "{f}", .{timestamp}) catch |e|
+            std.debug.panic("Could not print timestamp to buffer! Why: {t}", .{e});
 
         try serializer.serializeString(s);
     }

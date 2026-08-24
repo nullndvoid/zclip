@@ -326,9 +326,9 @@ pub fn start(self: *Network) !void {
 
 /// Stop the accept loop (by cancelling `start`) before calling this, so no
 /// new connection tasks are spawned into the group while it is awaited.
-pub fn stop(self: *Network) void {
+pub fn stop(self: *Network) !void {
     self.shutdown.set(self.io);
-    self.tasks.await(self.io) catch {};
+    try self.tasks.await(self.io);
 }
 
 pub fn deinit(self: *Network) void {

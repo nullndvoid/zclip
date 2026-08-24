@@ -57,8 +57,10 @@ pub fn init(io: Io, alloc: Allocator, identity: Network.Identity, opts: Opts) Da
         .opts = opts,
         .clipboard = null,
         .select_tasks = null,
+        // SAFETY: This is initialised on `start`.
         .select_tasks_buf = undefined,
         .identity = identity,
+        // SAFETY: This is initialised on `start`.
         .repo = undefined,
         .start_arena = std.heap.ArenaAllocator.init(alloc),
         .shutdown = .unset,
@@ -139,7 +141,7 @@ pub fn start(self: *Daemon) !void {
 
     // Stop both accept loops first so no new connections appear.
     self.select_tasks.?.cancelDiscard();
-    net.stop();
+    try net.stop();
 }
 
 pub fn deinit(self: *Daemon) void {
