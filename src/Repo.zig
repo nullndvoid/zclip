@@ -47,6 +47,15 @@ pub fn init(data_dir: []const u8, alloc: Allocator) !Repo {
     return .{ .db = db };
 }
 
+/// Used internally by unit tests.
+fn initInMemory() !Repo {
+    const db = try sqlite.Database.open(.{});
+
+    try initSchema(db);
+
+    return .{ .db = db };
+}
+
 fn initSchema(db: sqlite.Database) !void {
     try db.exec(
         \\ CREATE TABLE IF NOT EXISTS peers (
@@ -75,15 +84,22 @@ pub fn deinit(repo: *Repo) void {
     repo.db.close();
 }
 
+const AddPeerArgs = struct {
+    nickname: []const u8,
+    addr: ?[]const u8,
+    /// This should be base64-encoded.
+    pubkey: []const u8,
+};
+
 /// Adds a peer and returns their ID.
 pub fn addPeer(
     repo: *Repo,
-    peer: struct { nickname: []const u8, addr: ?[]const u8, pubkey: []const u8 },
+    peer: AddPeerArgs,
     force: bool,
 ) !u64 {
     const sql = if (force)
-        \\INSERT INTO peers (nickname, addr, pubkey) VALUES (:nickname, :addr, :pubkey) RETURNING id
-        \\ON CONFLICT (pubkey) DO UPDATE SET nickname = excluded.nickname, addr = excluded.addr;
+        \\INSERT INTO peers (nickname, addr, pubkey) VALUES (:nickname, :addr, :pubkey)
+        \\ON CONFLICT (pubkey) DO UPDATE SET nickname = excluded.nickname, addr = excluded.addr RETURNING id;
     else
         \\INSERT INTO peers (nickname, addr, pubkey) VALUES (:nickname, :addr, :pubkey) RETURNING id;
     ;
@@ -337,7 +353,7 @@ fn getPeersSql(repo: *Repo, alloc: Allocator, sql: []const u8) ![]const Network.
 pub fn getPeersNonDegraded(repo: *Repo, alloc: Allocator) ![]const Network.Peer {
     return repo.getPeersSql(
         alloc,
-        "SELECT * FROM peers WHERE degraded_reason IS NOT NULL;",
+        "SELECT * FROM peers WHERE degraded_reason IS NULL;",
     );
 }
 
@@ -395,7 +411,258 @@ fn toDegradationReason(reason: ?[]const u8, id: u64) ?Network.Peer.DegradationRe
     if (std.mem.eql(u8, reason.?, "remote_missing_our_pubkey")) return .remote_missing_our_pubkey;
     if (std.mem.eql(u8, reason.?, "remote_rejected")) return .remote_rejected;
 
-    log.warn("Unrecognised degradation reason in DB for peer ID {d}. Returning .remote_rejected for now.", .{id});
+    if (!@import("builtin").is_test)
+        log.warn("Unrecognised degradation reason in DB for peer ID {d}. Returning .remote_rejected for now.", .{id});
 
     return .remote_rejected;
+}
+
+test "add peer" {
+    const t = std.testing;
+    const alloc = t.allocator;
+
+    var repo = try Repo.initInMemory();
+    defer repo.deinit();
+
+    const addr = "nullndvoid.xyz:41152";
+    const pubkey_b64 = "ymWobyGapm1SWFKjHIyXqKYSjk8ksuk8LzgrlVl2pVY=";
+    const nickname = "nullndvoid.xyz";
+
+    const id = try repo.addPeer(.{
+        .addr = addr,
+        .nickname = nickname,
+        .pubkey = pubkey_b64,
+    }, false);
+
+    const got = try repo.getPeerById(id, alloc);
+    defer alloc.free(got.nickname);
+
+    const host = try alloc.print("{f}", .{got.host.?});
+    defer alloc.free(host);
+
+    const encoded = util.encodeKey(got.pubkey);
+
+    try t.expectEqualStrings(addr, host);
+    try t.expectEqualStrings(pubkey_b64, &encoded);
+    try t.expectEqualStrings(nickname, got.nickname);
+}
+
+test "adding peer with duplicate pubkey fails" {
+    const t = std.testing;
+
+    var repo = try Repo.initInMemory();
+    defer repo.deinit();
+
+    const addr = "nullndvoid.xyz:41152";
+    const pubkey_b64 = "ymWobyGapm1SWFKjHIyXqKYSjk8ksuk8LzgrlVl2pVY=";
+    const nickname = "nullndvoid.xyz";
+
+    _ = try repo.addPeer(.{
+        .addr = addr,
+        .nickname = nickname,
+        .pubkey = pubkey_b64,
+    }, false);
+
+    try t.expectError(error.PeerExists, repo.addPeer(.{
+        .addr = addr,
+        .nickname = nickname,
+        .pubkey = pubkey_b64,
+    }, false));
+}
+
+test "adding peer with duplicate pubkey clobbers with force == true" {
+    var repo = try Repo.initInMemory();
+    defer repo.deinit();
+
+    const addr = "nullndvoid.xyz:41152";
+    const pubkey_b64 = "ymWobyGapm1SWFKjHIyXqKYSjk8ksuk8LzgrlVl2pVY=";
+    const nickname = "nullndvoid.xyz";
+
+    _ = try repo.addPeer(.{
+        .addr = addr,
+        .nickname = nickname,
+        .pubkey = pubkey_b64,
+    }, false);
+
+    _ = try repo.addPeer(.{
+        .addr = addr,
+        .nickname = "Different nickname for fun",
+        .pubkey = pubkey_b64,
+    }, true);
+}
+
+test "lookup non-existent ID fails" {
+    const t = std.testing;
+    const alloc = t.allocator;
+
+    var repo = try Repo.initInMemory();
+    defer repo.deinit();
+
+    try t.expectError(error.NotFound, repo.getPeerById(1234, alloc));
+}
+
+// We can have a hashmap from pubkeys to their inputs and check all are present.
+test "add and check getPeers" {
+    const t = std.testing;
+    const alloc = t.allocator;
+
+    var repo = try Repo.initInMemory();
+    defer repo.deinit();
+
+    var added_map = std.StringHashMap(AddPeerArgs).init(alloc);
+    defer added_map.deinit();
+
+    const peers_to_add = [_]AddPeerArgs{
+        .{
+            .addr = "nullndvoid.xyz:41152",
+            .nickname = "nullndvoid.xyz",
+            .pubkey = "ymWobyGapm1SWFKjHIyXqKYSjk8ksuk8LzgrlVl2pVY=",
+        },
+        .{
+            // Notice that you can use something like Tailscale to connect to
+            // most devices.
+            .addr = "my-thinkpad",
+            .nickname = "Thinkpad",
+            .pubkey = "xwPMadaLZzsZBxk70CZZdHYwVX8sPuEKNJKHtgtkLy0=",
+        },
+    };
+
+    for (peers_to_add) |p| {
+        _ = try repo.addPeer(p, false);
+        try added_map.put(p.pubkey, p);
+    }
+
+    const peers = try repo.getPeers(alloc);
+    defer alloc.free(peers);
+
+    for (peers) |p| {
+        defer alloc.free(p.nickname);
+
+        const host = if (p.host) |h|
+            try alloc.print("{f}", .{h})
+        else
+            "";
+        defer alloc.free(host);
+
+        const encoded = util.encodeKey(p.pubkey);
+
+        const input = added_map.get(&encoded).?;
+
+        if (input.addr) |a| {
+            try t.expectEqualStrings(a, host[0..a.len]);
+        }
+        try t.expectEqualStrings(input.pubkey, &encoded);
+        try t.expectEqualStrings(input.nickname, p.nickname);
+    }
+}
+
+test "check only non-degraded are returned" {
+    const t = std.testing;
+    const alloc = t.allocator;
+
+    var repo = try Repo.initInMemory();
+    defer repo.deinit();
+
+    var added_map = std.StringHashMap(AddPeerArgs).init(alloc);
+    defer added_map.deinit();
+
+    var degraded_set = std.StringHashMap(void).init(alloc);
+    defer degraded_set.deinit();
+
+    const peers_to_add = [_]AddPeerArgs{
+        .{
+            .addr = "nullndvoid.xyz:41152",
+            .nickname = "nullndvoid.xyz",
+            .pubkey = "ymWobyGapm1SWFKjHIyXqKYSjk8ksuk8LzgrlVl2pVY=",
+        },
+        .{
+            // Notice that you can use something like Tailscale to connect to
+            // most devices.
+            .addr = "my-thinkpad",
+            .nickname = "Thinkpad",
+            .pubkey = "xwPMadaLZzsZBxk70CZZdHYwVX8sPuEKNJKHtgtkLy0=",
+        },
+    };
+
+    var prng = std.Random.DefaultPrng.init(
+        @intCast(
+            std.Io.Timestamp.now(t.io, .real).toMilliseconds(),
+        ),
+    );
+    const rng = prng.random();
+
+    for (peers_to_add) |p| {
+        const id = try repo.addPeer(p, false);
+        try added_map.put(p.pubkey, p);
+        if (rng.boolean()) {
+            try degraded_set.put(p.pubkey, {});
+            try repo.updatePeerDegraded(id, .remote_missing_our_pubkey);
+        }
+    }
+
+    const non_degraded_peers = try repo.getPeersNonDegraded(alloc);
+    defer alloc.free(non_degraded_peers);
+
+    for (non_degraded_peers) |p| {
+        defer alloc.free(p.nickname);
+
+        const encoded = util.encodeKey(p.pubkey);
+        try t.expectEqual(null, degraded_set.get(&encoded));
+
+        const host = if (p.host) |h|
+            try alloc.print("{f}", .{h})
+        else
+            "";
+        defer alloc.free(host);
+
+        const input = added_map.get(&encoded).?;
+
+        if (input.addr) |a| {
+            try t.expectEqualStrings(a, host[0..a.len]);
+        }
+        try t.expectEqualStrings(input.pubkey, &encoded);
+        try t.expectEqualStrings(input.nickname, p.nickname);
+    }
+
+    const peers = try repo.getPeers(alloc);
+    defer alloc.free(peers);
+
+    for (peers) |p| {
+        defer alloc.free(p.nickname);
+
+        const encoded = util.encodeKey(p.pubkey);
+        if (degraded_set.get(&encoded) == null) continue;
+
+        try t.expectEqual(p.degradation.?, .remote_missing_our_pubkey);
+    }
+}
+
+test "toDegradationReason - invalid input defaults as expected" {
+    const t = std.testing;
+
+    try t.expectEqual(
+        .remote_rejected,
+        toDegradationReason("invalid_reason", 123).?,
+    );
+}
+
+test "toDegradationReason - valid inputs" {
+    const t = std.testing;
+
+    // Triggers if this test might want updating.
+    comptime {
+        std.debug.assert(@typeInfo(Network.Peer.DegradationReason).@"enum".field_names.len == 3);
+    }
+
+    const mappings = [_]struct { []const u8, Network.Peer.DegradationReason }{
+        .{ "remote_rejected", .remote_rejected },
+        .{ "remote_missing_our_pubkey", .remote_missing_our_pubkey },
+        .{ "remote_rejected", .remote_rejected },
+    };
+
+    for (mappings) |m| {
+        const in, const out = m;
+
+        try t.expectEqual(out, toDegradationReason(in, 123).?);
+    }
 }
