@@ -608,11 +608,17 @@ fn handlePeerRecheck(self: *Network, payload: PeerRecheckPayload) void {
 
     // Attempt to connect now if no longer marked degraded.
     if (payload.params.clear_degraded and peer.host != null) {
-        self.connectToPeerIfApplicable(peer);
+        return self.connectToPeerIfApplicable(peer);
     }
 
-    // Drop current connection and reconnect using new public key.
-    if (payload.params.pubkey) |_| {
+    if (payload.params.clear_host) {
+        log.warn("Cleared hostname for peer {s}. This will not apply until you restart the daemon.", .{peer.nickname});
+    }
+
+    // Drop current connection and reconnect using new public key or hostname.
+    if (payload.params.pubkey != null or
+        payload.params.host != null)
+    {
         self.active_conns_lock.lock(self.io) catch {
             log.warn("Could not drop current connection for peer {s}. You should restart the daemon.", .{peer.nickname});
         };
@@ -626,7 +632,7 @@ fn handlePeerRecheck(self: *Network, payload: PeerRecheckPayload) void {
         }
 
         // Now just attempt to reconnect.
-        self.connectToPeerIfApplicable(peer);
+        return self.connectToPeerIfApplicable(peer);
     }
 
     log.info("Recheck: nothing to be done for peer {s}.", .{peer.nickname});
