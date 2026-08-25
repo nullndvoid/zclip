@@ -383,8 +383,6 @@ fn handleRemovePeer(self: *UnixSocket, peer_id: u64) !Command {
 }
 
 fn handlePostPeer(self: *UnixSocket, peer: Network.Peer, force: bool, alloc: Allocator) !Command {
-    var peer_copy = peer;
-
     // The DB stores pubkeys base64 encoded.
     const pubkey_b64 = util.encodeKey(peer.pubkey);
 
@@ -402,6 +400,10 @@ fn handlePostPeer(self: *UnixSocket, peer: Network.Peer, force: bool, alloc: All
         return .{ .DaemonError = @errorName(err) };
     };
 
+    var peer_copy = peer.clone(self.alloc) catch |err| {
+        return .{ .DaemonError = @errorName(err) };
+    };
+
     // We should try to ignore errors here since we did commit to
     // DB, but I want to push an event to the Network handler to
     // tell it to start trying to connect to a new peer.
@@ -413,9 +415,12 @@ fn handlePostPeer(self: *UnixSocket, peer: Network.Peer, force: bool, alloc: All
         //       The real underlying issue is that we want a way for both sides to
         //       attempt to establish a connection at any time.
         log.warn(
-            \\Added peer with ID {d} but could not post command to Network. 
+            \\Added peer with ID {d} but could not post command to Network.
             \\Connection will not be established until you restart the daemon. Reason: {t}
         , .{ id, e });
+
+        // Wasn't handed off to Network, so it's still ours to free.
+        peer_copy.deinit(self.alloc);
     };
 
     return .Ok;

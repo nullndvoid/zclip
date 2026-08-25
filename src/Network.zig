@@ -248,9 +248,9 @@ fn connectToPeer(self: *Network, peer: Peer) error{Canceled}!void {
                 // The remote peer might fix their config, so keep retrying at
                 // the maximum interval.
                 if (!backoff.failed) {
-                    log.warn("Peer `{s}` does not have this machines public key. Copy the following line to your peers config. Will retry every {d}s", .{ peer.nickname, Backoff.maxDelaySeconds() });
+                    log.warn("Peer `{s}` does not have this machines public key. Copy the following line to update your peers config. Will retry every {d}s", .{ peer.nickname, Backoff.maxDelaySeconds() });
                     const b64_pk = util.encodeKey(self.identity.public_key);
-                    log.info("pubkey = {s}", .{b64_pk});
+                    log.info("zclip peer edit --id ID -k \"{s}\"", .{b64_pk});
                 } else {
                     log.debug("Peer `{s}` still does not have this machines public key. Attempt {d}. Retrying soon...", .{ peer.nickname, backoff.attempts });
                 }
@@ -280,7 +280,6 @@ fn connectToPeer(self: *Network, peer: Peer) error{Canceled}!void {
 
         var encrypted_writer = session.encryptedWriter(writer);
         const encwriter = &encrypted_writer.interface;
-
         self.processPackets(rdr, encwriter, &session, peer, conn_arena.allocator()) catch |err| switch (err) {
             error.Canceled => {},
             error.PeerRemovedLocally, error.PeerDegraded => {
@@ -741,6 +740,22 @@ pub const Peer = struct {
         writer: *std.Io.Writer,
     ) std.Io.Writer.Error!void {
         try writer.print("{s}", .{self.nickname});
+    }
+
+    /// Dupes any allocated slices. Be sure to call `deinit` when done.
+    pub fn clone(self: Peer, alloc: Allocator) Allocator.Error!Peer {
+        return .{
+            .id = self.id,
+            .pubkey = self.pubkey,
+            .host = self.host,
+            .degradation = self.degradation,
+            .nickname = try alloc.dupe(u8, self.nickname),
+        };
+    }
+
+    /// Frees any allocated slices.
+    pub fn deinit(self: Peer, alloc: Allocator) void {
+        alloc.free(self.nickname);
     }
 
     /// Why the Peer is not currently connectable and we are refusing to keep
