@@ -400,17 +400,12 @@ fn handlePostPeer(self: *UnixSocket, peer: Network.Peer, force: bool, alloc: All
         return .{ .DaemonError = @errorName(err) };
     };
 
-    var peer_copy = peer.clone(self.alloc) catch |err| {
-        return .{ .DaemonError = @errorName(err) };
-    };
-
     // We should try to ignore errors here since we did commit to
     // DB, but I want to push an event to the Network handler to
     // tell it to start trying to connect to a new peer.
     errdefer comptime unreachable;
 
-    peer_copy.id = id;
-    self.commands.putOne(self.io, .{ .peer_add = peer_copy }) catch |e| {
+    self.commands.putOne(self.io, .{ .peer_add = id }) catch |e| {
         // TODO: Make this retryable with some kinda command?
         //       The real underlying issue is that we want a way for both sides to
         //       attempt to establish a connection at any time.
@@ -418,9 +413,6 @@ fn handlePostPeer(self: *UnixSocket, peer: Network.Peer, force: bool, alloc: All
             \\Added peer with ID {d} but could not post command to Network.
             \\Connection will not be established until you restart the daemon. Reason: {t}
         , .{ id, e });
-
-        // Wasn't handed off to Network, so it's still ours to free.
-        peer_copy.deinit(self.alloc);
     };
 
     return .Ok;

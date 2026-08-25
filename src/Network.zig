@@ -213,8 +213,16 @@ fn connectWithBackoff(self: *Network, host: Host, peer: Peer, backoff: *Backoff)
 /// Attempts to connect to a peer, retrying with backoff, then services the
 /// connection until it closes. Only fails on cancellation; anything fatal for
 /// this one peer is logged and starts retrying in case they reconnect.
-fn connectToPeer(self: *Network, peer: Peer) error{Canceled}!void {
+fn connectToPeer(self: *Network, id: u64) error{Canceled}!void {
     var backoff = Backoff{};
+
+    const peer = self.repo.getPeerById(id, self.alloc) catch |err| {
+        log.err("Could not fetch added peer #{d} from DB. Why: {t}.\n" ++
+            "You may want to restart your daemon.", .{ id, err });
+
+        return;
+    };
+    defer peer.deinit(self.alloc);
 
     while (true) {
         const stream = self.connectWithBackoff(peer.host.?, peer, &backoff) catch |err| switch (err) {
@@ -311,7 +319,7 @@ pub fn start(self: *Network) !void {
     }
 
     for (self.connectable) |connectable| {
-        self.tasks.concurrent(self.io, connectToPeer, .{ self, connectable }) catch |err| switch (err) {
+        self.tasks.concurrent(self.io, connectToPeer, .{ self, connectable.id }) catch |err| switch (err) {
             error.ConcurrencyUnavailable => log.err(
                 "No concurrency available to dial peer `{s}`. Skipping them.",
                 .{connectable.nickname},
@@ -585,7 +593,7 @@ fn processCommands(self: *Network) Io.Cancelable!void {
         };
 
         switch (cmd) {
-            .peer_add => |peer| self.handlePeerAdd(peer),
+            .peer_add => |id| self.handlePeerAdd(id),
             .peer_rm => |id| self.handlePeerRm(id),
             .peer_recheck => |payload| self.handlePeerRecheck(payload),
         }
@@ -603,7 +611,6 @@ fn handlePeerRecheck(self: *Network, payload: PeerRecheckPayload) void {
 
         return;
     };
-    defer self.alloc.free(peer.nickname);
 
     log.info("Peer recheck triggered for {s}.", .{peer.nickname});
 
@@ -622,6 +629,8 @@ fn handlePeerRecheck(self: *Network, payload: PeerRecheckPayload) void {
     {
         self.active_conns_lock.lock(self.io) catch {
             log.warn("Could not drop current connection for peer {s}. You should restart the daemon.", .{peer.nickname});
+            
+            return;
         };
         const removed = self.active_conns.fetchRemove(payload.id);
         self.active_conns_lock.unlock(self.io);
@@ -637,6 +646,8 @@ fn handlePeerRecheck(self: *Network, payload: PeerRecheckPayload) void {
     }
 
     log.info("Recheck: nothing to be done for peer {s}.", .{peer.nickname});
+
+    peer.deinit(self.alloc);
 }
 
 fn handlePeerRm(self: *Network, id: u64) void {
@@ -655,6 +666,8 @@ fn handlePeerRm(self: *Network, id: u64) void {
 }
 
 fn connectToPeerIfApplicable(self: *Network, peer: Peer) void {
+    defer peer.deinit(self.alloc);
+
     // TODO: Enforce this throughout e.g. on edit/add etc.
     std.debug.assert(std.mem.order(u8, &self.identity.public_key, &peer.pubkey) != .eq);
 
@@ -666,7 +679,7 @@ fn connectToPeerIfApplicable(self: *Network, peer: Peer) void {
         self.tasks.concurrent(
             self.io,
             connectToPeer,
-            .{ self, peer },
+            .{ self, peer.id },
         ) catch {
             log.err(
                 "Could not connect to ({s} (id {d})). Consider restarting the daemon.",
@@ -679,7 +692,13 @@ fn connectToPeerIfApplicable(self: *Network, peer: Peer) void {
     }
 }
 
-fn handlePeerAdd(self: *Network, peer: Peer) void {
+fn handlePeerAdd(self: *Network, id: u64) void {
+    const peer = self.repo.getPeerById(id, self.alloc) catch |err| {
+        log.err("Could not fetch added peer #{d} from DB. Why: {t}.\n" ++
+            "You may want to restart your daemon.", .{ id, err });
+        return;
+    };
+
     log.debug("New peer added: {f}", .{peer});
 
     self.connectToPeerIfApplicable(peer);
@@ -707,7 +726,7 @@ fn acceptConnections(self: *Network) void {
 
 pub const Command = union(enum) {
     /// A `Peer` was added to the DB.
-    peer_add: Peer,
+    peer_add: u64,
     /// `Peer` was removed from the DB. This contains it's local ID.
     peer_rm: u64,
     /// `Peer`'s details were edited. If there is a live connection it may need
