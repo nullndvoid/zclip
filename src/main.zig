@@ -47,7 +47,9 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
     }).init;
 
     var io_gpa = std.heap.DebugAllocator(.{}).init;
-    defer _ = io_gpa.deinit();
+    defer {
+        _ = io_gpa.detectLeaks();
+    }
 
     var io_impl = Io.Threaded.init(io_gpa.allocator(), .{});
     defer io_impl.deinit();
