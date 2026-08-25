@@ -310,7 +310,7 @@ pub fn main(minimal: std.process.Init.Minimal) !void {
 
 fn printPeers(peers: []const Network.Peer, writer: *Io.Writer) !void {
     if (peers.len == 0) {
-        try writer.print("There are no peers added. Try adding one with `zclip peer add`", .{});
+        try writer.print("There are no peers added. Try adding one with `zclip peer add`\n", .{});
         try writer.flush();
     }
 
